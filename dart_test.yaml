@@ -1,0 +1,12 @@
+# Test runner configuration (flutter test / dart test).
+#
+# The `model` tag marks tests that need the real VieNeu int8 checkpoint staged
+# under `assets/models/` (~273 MB via `tool/fetch_model.sh`). Those tests live
+# in `integration_test/`, outside `test/`, so a plain `flutter test` never picks
+# them up; they run explicitly on a desktop device with:
+#
+#   flutter test integration_test -d linux --tags model
+tags:
+  model:
+    # Model load + CPU inference of a real sentence is not a unit-test timescale.
+    timeout: 10m
