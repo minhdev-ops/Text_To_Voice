@@ -1,3 +1,7 @@
+library;
+
+import 'model_descriptor.dart';
+
 /// What the Model Manager installs, and exactly how big and which bytes it is.
 ///
 /// The manifest is baked into the app rather than fetched, because a manifest
@@ -13,7 +17,6 @@
 /// Nothing here is bundled in the APK. Weights, codec and dictionary are
 /// downloaded and deletable (FR-20); the only model-adjacent asset that ships
 /// with the app is the 180 KB voice catalog.
-library;
 
 import 'dart:convert';
 
@@ -59,22 +62,21 @@ class ModelFileSpec {
 
 /// The VieNeu-TTS v3 Turbo int8 checkpoint plus everything needed to run it.
 class VieNeuModelManifest {
-  VieNeuModelManifest._();
+  const VieNeuModelManifest();
 
-  static const String modelId = 'vieneu-v3-turbo-int8';
-  static const String checkpointName = 'VieNeu-TTS v3 Turbo';
+  static const String _modelIdStatic = 'vieneu-v3-turbo-int8';
+  static const String _checkpointNameStatic = 'VieNeu-TTS v3 Turbo';
+  static String get modelId => _modelIdStatic;
+  static String get checkpointName => _checkpointNameStatic;
   static const String version = 'int8';
   static const String quantization = 'int8';
 
   /// Read from the pinned repositories, not assumed from the model family: SRS
   /// §47 is explicit that different VieNeu checkpoints carry different terms.
-  static const String license = 'Apache-2.0';
-  static const String licenseSource =
-      'pnnbao-ump/VieNeu-TTS-v3-Turbo · OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano-ONNX · pnnbao97/sea-g2p';
 
   /// Sample rate the codec produces, shown in the Models row so the row is a
   /// spec of what will be heard rather than a name.
-  static const int sampleRate = 48000;
+
 
   /// Directory names, matching what the engine and the g2p loader are given.
   static const String modelDirectoryName = 'vieneu-v3-turbo-int8';
@@ -211,7 +213,7 @@ class VieNeuModelManifest {
 
   /// Every file the given platform needs, in install order (small and
   /// structural first, so a cancel early costs the least).
-  static List<ModelFileSpec> filesFor(String platform) => <ModelFileSpec>[
+  static List<ModelFileSpec> _filesFor(String platform) => <ModelFileSpec>[
         ..._modelFiles,
         ..._codecFiles,
         ..._phonemizerFiles.where((file) => file.appliesTo(platform)),
@@ -220,7 +222,7 @@ class VieNeuModelManifest {
   /// Exact download size for the given platform, summed from the manifest
   /// rather than rounded on a screen: the row says "≈ 280 MB" only because that
   /// is what the arithmetic produces.
-  static int totalBytesFor(String platform) => filesFor(platform)
+  static int _totalBytesFor(String platform) => _filesFor(platform)
       .fold<int>(0, (sum, file) => sum + file.sizeBytes);
 
   /// Whether the manifest provides a *loadable* native g2p library for
@@ -239,11 +241,11 @@ class VieNeuModelManifest {
   /// It names the *set* of files and their expected hashes, so a row written by
   /// an older build of the app is recognisable as such instead of looking like a
   /// corrupt install.
-  static String get manifestDigest {
+  static String _getManifestDigest() {
     final material = <String>[
       modelId,
       version,
-      for (final file in filesFor('linux'))
+      for (final file in _filesFor('linux'))
         '${file.relativePath}:${file.sizeBytes}:${file.sha256}',
     ].join('\n');
     return sha256.convert(utf8.encode(material)).toString();
@@ -260,4 +262,31 @@ class VieNeuModelManifest {
     if (bytes >= 1000) return '${(bytes / 1000).round()} KB';
     return '$bytes B';
   }
+
+  @override
+  String get engineId => 'vieneu-onnx-v3-turbo';
+  @override
+  String get license => 'Apache-2.0';
+  @override
+  String get licenseSource =>
+      'pnnbao-ump/VieNeu-TTS-v3-Turbo · OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano-ONNX · pnnbao97/sea-g2p';
+  @override
+  int get sampleRate => 48000;
+  @override
+  String get summary => 'Nhanh, nhẹ — phù hợp thiết bị yếu.';
+  @override
+  int get voiceCount => 25;
+  @override
+  int totalBytesFor(String platform) => VieNeuModelManifest._totalBytesFor(platform);
+  @override
+  List<ModelFileSpec> filesFor(String platform) => List<ModelFileSpec>.from(VieNeuModelManifest._filesFor(platform)) as List<ModelFileSpec>;
+  @override
+  Map<String, String> get componentDirectories => <String, String>{
+        ModelComponent.model: VieNeuModelManifest.modelId,
+        ModelComponent.codec: codecDirectoryName,
+        ModelComponent.phonemizer: phonemizerDirectoryName,
+      };
+  @override
+  String get manifestDigest => VieNeuModelManifest._getManifestDigest();
+
 }

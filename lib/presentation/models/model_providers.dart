@@ -1,22 +1,79 @@
-import 'dart:async';
+import 'dart:async' show unawaited;
 import 'dart:io' show Platform;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../ai/models/model_install_service.dart';
+import '../../ai/models/model_variant.dart';
 import '../../ai/models/vieneu_model_manifest.dart';
 import '../../core/logging/app_log.dart';
 import '../../data/providers.dart';
 import '../../domain/models/tts.dart' show VoicePreset;
+
+/// The active TTS model variant, persisted across restarts.
+///
+/// **The choice is persisted.** Uses the same pattern as [ThemeModeNotifier]:
+/// `build` returns the in-memory default (int8) and fires off a restore from
+/// the `settings` table; a restore that fails simply leaves the default in
+/// place rather than blocking the Models screen.
+class ActiveModelVariant extends Notifier<ModelVariant> {
+  static const String _settingKey = 'active_model_id';
+
+  @override
+  ModelVariant build() {
+    unawaited(_restore());
+    return ModelVariant.int8;
+  }
+
+  var _restored = false;
+
+  Future<void> _restore() async {
+    if (_restored) return;
+    _restored = true;
+    String? stored;
+    try {
+      stored = await ref.read(documentRepositoryProvider).getSetting(_settingKey);
+    } catch (_) {
+      return;
+    }
+    if (!ref.mounted || stored == null) return;
+    for (final variant in ModelVariant.all) {
+      if (variant.modelId == stored) {
+        state = variant;
+        return;
+      }
+    }
+  }
+
+  Future<void> select(ModelVariant variant) async {
+    if (state == variant) return;
+    state = variant;
+    try {
+      await ref
+          .read(documentRepositoryProvider)
+          .setSetting(_settingKey, variant.modelId);
+    } catch (error, stack) {
+      AppLog.error('model.variant.saveFailed', error: error, stackTrace: stack);
+    }
+  }
+}
+
+final activeModelVariantProvider =
+    NotifierProvider<ActiveModelVariant, ModelVariant>(
+  ActiveModelVariant.new,
+);
 
 /// The install service, rooted at the app's private `models/` directory.
 ///
 /// Overridden in tests with a temporary directory, which is the only way to
 /// exercise install/cancel/delete without touching the real app storage.
 final modelInstallServiceProvider = Provider<ModelInstallService>((ref) {
+  final variant = ref.watch(activeModelVariantProvider);
   final service = ModelInstallService(
     root: ref.watch(modelsDirectoryProvider),
-    files: VieNeuModelManifest.filesFor(Platform.operatingSystem),
+    modelId: variant.modelId,
+    modelDirectoryName: variant.modelDirectoryName,
+    files: VieNeuModelManifest().filesFor(Platform.operatingSystem),
   );
   ref.onDispose(service.dispose);
   return service;
@@ -103,7 +160,8 @@ class ModelInstallController extends Notifier<ModelInstallState> {
     final service = ref.read(modelInstallServiceProvider);
     final result = await service.delete();
     if (ref.mounted) state = result;
-    await ref.read(documentRepositoryProvider).forgetModel(VieNeuModelManifest.modelId);
+    final variant = ref.read(activeModelVariantProvider);
+    await ref.read(documentRepositoryProvider).forgetModel(variant.modelId);
   }
 
   /// Mirrors the install state into the `models` table (SRS §35) so the Model
@@ -111,19 +169,20 @@ class ModelInstallController extends Notifier<ModelInstallState> {
   Future<void> _syncDatabase(ModelInstallState state) async {
     try {
       final repository = ref.read(documentRepositoryProvider);
+      final variant = ref.read(activeModelVariantProvider);
       if (state.stage == ModelInstallStage.installed) {
         await repository.upsertModel(
           VoicePreset(
-            id: VieNeuModelManifest.modelId,
-            label: VieNeuModelManifest.checkpointName,
+            id: variant.modelId,
+            label: variant.checkpointName,
             language: 'vi-VN',
-            engineId: 'vieneu-onnx-v3-turbo',
-            license: VieNeuModelManifest.license,
+            engineId: variant.engineId,
+            license: variant.license,
             isInstalled: true,
             sizeBytes: state.installedBytes,
           ),
           state.modelPath ?? ref.read(modelInstallServiceProvider).modelPath,
-          VieNeuModelManifest.manifestDigest,
+          VieNeuModelManifest().manifestDigest,
         );
       }
     } catch (error, stack) {
@@ -150,3 +209,7 @@ final modelReadyProvider = Provider<bool>((ref) {
   if (ref.watch(appDocumentsDirectoryProvider).value == null) return false;
   return ref.watch(modelInstallControllerProvider.select((s) => s.engineUsable));
 });
+
+/// Persists a model variant choice and updates the provider.
+Future<void> setActiveModelVariant(WidgetRef ref, ModelVariant variant) =>
+    ref.read(activeModelVariantProvider.notifier).select(variant);

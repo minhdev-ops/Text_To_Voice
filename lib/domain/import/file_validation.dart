@@ -7,15 +7,7 @@ import '../../core/result/result.dart';
 import '../models/imported_file.dart' show ImportedFile;
 
 /// What a file actually is, decided from its bytes.
-enum FileKind {
-  pdf,
-  epub,
-  text,
-  markdown,
-  imageJpeg,
-  imagePng,
-  imageWebp,
-}
+enum FileKind { pdf, epub, text, markdown, imageJpeg, imagePng, imageWebp }
 
 /// The size above which the app refuses rather than tries.
 ///
@@ -66,17 +58,20 @@ abstract final class ImportValidator {
   /// because "tệp không hợp lệ" is not something a user can act on.
   static Result<ValidatedFile> validate(ImportedFile file) {
     if (file.size > maxImportBytes) {
-      return Failure(ValidationFailure(
-        message: 'Tệp lớn hơn ${maxImportBytes ~/ (1024 * 1024)} MB nên chưa '
-            'xử lý được.',
-      ));
+      return Failure(
+        ValidationFailure(
+          message:
+              'Tệp lớn hơn ${maxImportBytes ~/ (1024 * 1024)} MB nên chưa '
+              'xử lý được.',
+        ),
+      );
     }
 
     final head = file.headBytes;
     if (head == null || head.isEmpty) {
-      return const Failure(ValidationFailure(
-        message: 'Không đọc được nội dung tệp để kiểm tra.',
-      ));
+      return const Failure(
+        ValidationFailure(message: 'Không đọc được nội dung tệp để kiểm tra.'),
+      );
     }
 
     final claimed = file.extension;
@@ -87,36 +82,48 @@ abstract final class ImportValidator {
       // so text is validated by *decodability* instead, and anything else that
       // reaches here is rejected.
       if (!_isTextualExtension(claimed)) {
-        return Failure(ValidationFailure(
-          message: 'Tệp ".$claimed" không đúng định dạng mà phần mở rộng của '
-              'nó khai báo.',
-        ));
+        return Failure(
+          ValidationFailure(
+            message:
+                'Tệp ".$claimed" không đúng định dạng mà phần mở rộng của '
+                'nó khai báo.',
+          ),
+        );
       }
       if (!_looksLikeDecodableText(head)) {
-        return Failure(ValidationFailure(
-          message: 'Tệp ".$claimed" không phải văn bản đọc được.',
-        ));
+        return Failure(
+          ValidationFailure(
+            message: 'Tệp ".$claimed" không phải văn bản đọc được.',
+          ),
+        );
       }
-      return Success(ValidatedFile(
-        kind: claimed == 'md' ? FileKind.markdown : FileKind.text,
-        mimeType: claimed == 'md' ? 'text/markdown' : 'text/plain',
-        extension: claimed,
-      ));
+      return Success(
+        ValidatedFile(
+          kind: claimed == 'md' ? FileKind.markdown : FileKind.text,
+          mimeType: claimed == 'md' ? 'text/markdown' : 'text/plain',
+          extension: claimed,
+        ),
+      );
     }
 
     if (!_matchesExtension(sniffed, claimed)) {
-      return Failure(ValidationFailure(
-        message: 'Tệp có đuôi ".$claimed" nhưng nội dung là '
-            '${_describe(sniffed)}. Có thể tệp đã bị đổi tên.',
-      ));
+      return Failure(
+        ValidationFailure(
+          message:
+              'Tệp có đuôi ".$claimed" nhưng nội dung là '
+              '${_describe(sniffed)}. Có thể tệp đã bị đổi tên.',
+        ),
+      );
     }
 
-    return Success(ValidatedFile(
-      kind: sniffed.kind,
-      mimeType: sniffed.mimeType,
-      extension: claimed,
-      encrypted: sniffed.encrypted,
-    ));
+    return Success(
+      ValidatedFile(
+        kind: sniffed.kind,
+        mimeType: sniffed.mimeType,
+        extension: claimed,
+        encrypted: sniffed.encrypted,
+      ),
+    );
   }
 
   /// The magic number of [head], or `null` when there is none.
@@ -126,17 +133,26 @@ abstract final class ImportValidator {
   /// zip would fail later in a confusing way. The `mimetype` entry is therefore
   /// checked by name, which is what the format requires to be first and stored
   /// uncompressed.
-  static _Sniffed? sniff(Uint8List head) {
+  static Sniffed? sniff(Uint8List head) {
     if (_startsWith(head, <int>[0x25, 0x50, 0x44, 0x46])) {
       // %PDF — and the encrypted flag comes from the trailer, which only the
       // parser can read, so it is answered there.
-      return const _Sniffed(FileKind.pdf, 'application/pdf');
+      return const Sniffed(FileKind.pdf, 'application/pdf', encrypted: false);
     }
-    if (_startsWith(head, <int>[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])) {
-      return const _Sniffed(FileKind.imagePng, 'image/png');
+    if (_startsWith(head, <int>[
+      0x89,
+      0x50,
+      0x4E,
+      0x47,
+      0x0D,
+      0x0A,
+      0x1A,
+      0x0A,
+    ])) {
+      return const Sniffed(FileKind.imagePng, 'image/png');
     }
     if (_startsWith(head, <int>[0xFF, 0xD8, 0xFF])) {
-      return const _Sniffed(FileKind.imageJpeg, 'image/jpeg');
+      return const Sniffed(FileKind.imageJpeg, 'image/jpeg');
     }
     if (_startsWith(head, <int>[0x52, 0x49, 0x46, 0x46]) &&
         head.length >= 12 &&
@@ -144,12 +160,12 @@ abstract final class ImportValidator {
         head[9] == 0x45 &&
         head[10] == 0x42 &&
         head[11] == 0x50) {
-      return const _Sniffed(FileKind.imageWebp, 'image/webp');
+      return const Sniffed(FileKind.imageWebp, 'image/webp');
     }
     if (_startsWith(head, <int>[0x50, 0x4B, 0x03, 0x04])) {
       final isEpub = _zipEntryText(head, 'mimetype') == 'application/epub+zip';
       return isEpub
-          ? const _Sniffed(FileKind.epub, 'application/epub+zip')
+          ? const Sniffed(FileKind.epub, 'application/epub+zip')
           : null;
     }
     return null;
@@ -164,16 +180,20 @@ abstract final class ImportValidator {
     if (head.length < 30) return null;
     final nameLength = head[26] | (head[27] << 8);
     final extraLength = head[28] | (head[29] << 8);
+    if (30 + nameLength > head.length) return null;
+    // The file name lives at offset 30, *after* the 30-byte fixed header.
+    final nameBytes = head.sublist(30, 30 + nameLength);
+    if (utf8.decode(nameBytes, allowMalformed: true) != name) return null;
     final start = 30 + nameLength + extraLength;
     if (start > head.length) return null;
-    final bytes = head.sublist(0, nameLength);
-    if (utf8.decode(bytes, allowMalformed: true) != name) return null;
-    final compressedSize = head[18] | (head[19] << 8);
+    // Compressed size is a 4-byte little-endian field at offset 18.
+    final compressedSize =
+        head[18] | (head[19] << 8) | (head[20] << 16) | (head[21] << 24);
     final end = (start + compressedSize).clamp(start, head.length);
     return utf8.decode(head.sublist(start, end), allowMalformed: true).trim();
   }
 
-  static bool _matchesExtension(_Sniffed sniffed, String extension) =>
+  static bool _matchesExtension(Sniffed sniffed, String extension) =>
       switch (sniffed.kind) {
         FileKind.pdf => extension == 'pdf',
         FileKind.epub => extension == 'epub',
@@ -213,20 +233,20 @@ abstract final class ImportValidator {
     return true;
   }
 
-  static String _describe(_Sniffed sniffed) => switch (sniffed.kind) {
-        FileKind.pdf => 'PDF',
-        FileKind.epub => 'EPUB',
-        FileKind.imageJpeg => 'ảnh JPEG',
-        FileKind.imagePng => 'ảnh PNG',
-        FileKind.imageWebp => 'ảnh WebP',
-        FileKind.text => 'văn bản',
-        FileKind.markdown => 'Markdown',
-      };
+  static String _describe(Sniffed sniffed) => switch (sniffed.kind) {
+    FileKind.pdf => 'PDF',
+    FileKind.epub => 'EPUB',
+    FileKind.imageJpeg => 'ảnh JPEG',
+    FileKind.imagePng => 'ảnh PNG',
+    FileKind.imageWebp => 'ảnh WebP',
+    FileKind.text => 'văn bản',
+    FileKind.markdown => 'Markdown',
+  };
 }
 
 @immutable
-class _Sniffed {
-  const _Sniffed(this.kind, this.mimeType, {this.encrypted = false});
+class Sniffed {
+  const Sniffed(this.kind, this.mimeType, {this.encrypted = false});
 
   final FileKind kind;
   final String mimeType;

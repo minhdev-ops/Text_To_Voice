@@ -27,6 +27,8 @@ class SentenceSynthesisQueue {
     required TtsEngine engine,
     required SynthesisCache cache,
     this.lookAhead = 2,
+    this.retryBaseDelay = const Duration(seconds: 2),
+    this.maxRetries = 3,
     TextNormalizer normalizer = const TextNormalizer(),
     SentenceSplitter splitter = const SentenceSplitter(),
     DateTime Function() clock = DateTime.now,
@@ -54,6 +56,17 @@ class SentenceSynthesisQueue {
   /// Deliberately small: every extra sentence costs RAM and CPU on a phone
   /// (NFR-04/NFR-05), and only the next one is likely to be heard soon.
   final int lookAhead;
+
+  /// How many times a failed sentence is retried before it is reported as
+  /// skipped. A transient failure (the worker isolate briefly busy, a codec
+  /// hiccup) should fix itself; a sentence the model genuinely cannot speak
+  /// must surface to the reader instead of burning [maxRetries] forever.
+  final int maxRetries;
+
+  /// Wait before retry *n* is `retryBaseDelay * 2^n` — 2 s, 4 s, 8 s. A
+  /// backoff rather than a fixed wait because hammering a struggling engine
+  /// makes the struggling worse. Injectable so tests can collapse it to zero.
+  final Duration retryBaseDelay;
 
   final StreamController<List<Sentence>> _changes =
       StreamController<List<Sentence>>.broadcast();
@@ -87,6 +100,14 @@ class SentenceSynthesisQueue {
   /// Order follows SRS §12 (normalize → split → synthesize). [Sentence.text] is
   /// therefore the **normalized** sentence — what gets spoken — while the
   /// reader keeps showing the user's original text.
+  ///
+  /// The raw and normalized texts are split **paragraph by paragraph** and the
+  /// sentence runs zipped: [Sentence.displayText] carries the user's own words
+  /// for the reading surface, [Sentence.text] the spoken form for the engine.
+  /// Normalization never adds a sentence terminator, so the two runs agree
+  /// paragraph for paragraph; when they do not (a future normalizer change),
+  /// [Sentence.displayText] stays `null` for that paragraph and the reader
+  /// honestly shows the spoken text rather than showing misaligned words.
   Future<List<Sentence>> load(
     String rawText, {
     required TtsOptions options,
@@ -96,20 +117,34 @@ class SentenceSynthesisQueue {
     _options = options;
 
     final normalized = _normalizer.normalize(rawText);
-    final texts = _splitter.split(normalized);
-    _sentences = <Sentence>[
-      for (var i = 0; i < texts.length; i++)
-        Sentence(
-          index: i,
-          text: texts[i],
+    final normalizedParagraphs = _splitter.splitByParagraph(normalized);
+    final rawParagraphs = _splitter.splitByParagraph(rawText);
+
+    _sentences = <Sentence>[];
+    for (var p = 0; p < normalizedParagraphs.length; p++) {
+      final spoken = normalizedParagraphs[p];
+      // Display text comes from the matching raw paragraph, when the structure
+      // survived normalization unchanged.
+      final shown =
+          p < rawParagraphs.length && rawParagraphs[p].length == spoken.length
+              ? rawParagraphs[p]
+              : null;
+      for (var i = 0; i < spoken.length; i++) {
+        _sentences.add(Sentence(
+          index: _sentences.length,
+          text: spoken[i],
+          displayText: shown?[i],
+          paragraph: p,
           // Read-aloud is a flat text stream, so every sentence belongs to the
           // same synthetic block. Phase 3 supplies real block ids.
           blockId: 'read-aloud',
-        ),
-    ];
+        ));
+      }
+    }
 
     AppLog.info('speech.queue.loaded', data: <String, Object?>{
-      'sentences': texts.length,
+      'sentences': _sentences.length,
+      'paragraphs': normalizedParagraphs.length,
       'text': AppLog.textDigest(rawText),
     });
     _publish();
@@ -284,10 +319,33 @@ class SentenceSynthesisQueue {
     // Measured around the engine call only, so it is the cost of making audio —
     // not the cost of a cache lookup that skipped the work, and not the time the
     // UI happened to sit idle. This is what lets the surface say "câu này mất
-    // khoảng N giây" from a fact rather than a guess.
-    final startedAt = _clock();
-    final Result<AudioResult> result =
+    // khoảng N giây" from a fact rather than a guess. The clock restarts for the
+    // attempt that actually produced the audio, so a sentence that succeeded on
+    // its third try is measured by what it cost, not by what its failures cost.
+    var startedAt = _clock();
+    Result<AudioResult> result =
         await _engine.synthesize(sentence.text, _options);
+
+    // A transient failure is retried with a growing wait before the sentence is
+    // reported as skipped: one engine hiccup must not cost the reader a sentence
+    // in the middle of their document. Each wait checks the generation, so a
+    // retry never lands on text the user has already moved past.
+    for (var attempt = 0;
+        attempt < maxRetries && _isRetryable(result);
+        attempt++) {
+      final wait = retryBaseDelay * (1 << attempt);
+      AppLog.warning('speech.synthesize.retry', data: <String, Object?>{
+        'sentence': index,
+        'attempt': attempt + 1,
+        'waitMs': wait.inMilliseconds,
+      });
+      if (wait > Duration.zero) await Future<void>.delayed(wait);
+      if (generation != _generation) {
+        return const Result<AudioResult>.failure(CancelledFailure());
+      }
+      startedAt = _clock();
+      result = await _engine.synthesize(sentence.text, _options);
+    }
     final synthesisMs = _clock().difference(startedAt).inMilliseconds;
 
     if (generation != _generation) {
@@ -309,6 +367,15 @@ class SentenceSynthesisQueue {
     }
     return finish(result);
   }
+
+  /// A failure worth spending a retry on.
+  ///
+  /// A missing model will fail every sentence identically — retrying just
+  /// delays the honest report, so only an unknown engine hiccup retries.
+  bool _isRetryable(Result<AudioResult> result) =>
+      result is Failure<AudioResult> &&
+      result.failure is! CancelledFailure &&
+      result.failure is! ModelUnavailableFailure;
 
   void _setStatus(
     int index,

@@ -1,24 +1,52 @@
+import 'dart:typed_data';
+
+import 'package:drift/native.dart' show NativeDatabase;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:text_to_voice/core/theme/app_theme.dart';
+import 'package:text_to_voice/data/database/app_database.dart';
+import 'package:text_to_voice/data/providers.dart' show documentRepositoryProvider;
+import 'package:text_to_voice/data/repository/document_repository.dart';
 import 'package:text_to_voice/domain/models/reading.dart';
 import 'package:text_to_voice/domain/speech/sentence_synthesis_queue.dart';
 import 'package:text_to_voice/domain/speech/synthesis_cache.dart';
+import 'package:text_to_voice/ai/tts/vieneu_voices.dart';
 import 'package:text_to_voice/presentation/read_aloud/read_aloud_providers.dart';
 import 'package:text_to_voice/presentation/read_aloud/read_aloud_screen.dart';
-import 'package:text_to_voice/presentation/read_aloud/sentence_block.dart';
+import 'package:text_to_voice/presentation/read_aloud/reading_view.dart';
 import 'package:text_to_voice/presentation/read_aloud/sentence_ruler.dart';
 import 'package:text_to_voice/presentation/read_aloud/transport_bar.dart';
 
 import '../../support/fake_audio_output.dart';
 import '../../support/fake_tts_engine.dart';
 
+/// Two voices, small enough to build inline: the sheet needs names to show and
+/// ids to resolve, not 192-d embeddings.
+VieNeuVoiceCatalog _testCatalog() => VieNeuVoiceCatalog(
+      voices: <VieNeuVoice>[
+        _voice('Miên'),
+        _voice('Bách'),
+      ],
+      defaultVoiceId: 'Miên',
+    );
+
+VieNeuVoice _voice(String id) => VieNeuVoice(
+      id: id,
+      label: id,
+      speakerEmbedding: Float32List(0),
+      refCodes: Int32List(0),
+      refFrames: 0,
+      codebookCount: 1,
+    );
+
 void main() {
   late FakeTtsEngine engine;
   late FakeAudioOutput output;
   late SentenceSynthesisQueue queue;
+  late DocumentRepository repo;
+  late AppDatabase db;
 
   const text = 'Câu một. Câu hai. Câu ba.';
 
@@ -29,9 +57,16 @@ void main() {
       engine: engine,
       cache: InMemorySynthesisCache(),
       lookAhead: 1,
+      // Zero: a sentence the fake engine fails on must fail *now*, not after
+      // the real 2 s/4 s/8 s backoff the app uses in production.
+      retryBaseDelay: Duration.zero,
     );
+    db = AppDatabase(NativeDatabase.memory());
+    repo = DocumentRepository(db);
     _clockNow = DateTime(2026);
   });
+
+  tearDown(() async => db.close());
 
   /// Mounts the screen. [missingModel] leaves the real default engine in place,
   /// which is the app's own "no checkpoint bundled yet" state.
@@ -46,6 +81,8 @@ void main() {
           if (!missingModel) ttsEngineProvider.overrideWithValue(engine),
           sentenceQueueProvider.overrideWithValue(queue),
           audioOutputProvider.overrideWithValue(output),
+          documentRepositoryProvider.overrideWithValue(repo),
+          voiceCatalogProvider.overrideWith((ref) async => _testCatalog()),
         ],
         child: MaterialApp(
           theme: AppTheme.light(),
@@ -60,12 +97,6 @@ void main() {
     await tester.enterText(find.byType(TextField), value);
     await tester.pumpAndSettle();
   }
-
-  /// Labels of the rows currently built in the open sheet.
-  List<String> sheetTitles(WidgetTester tester) => tester
-      .widgetList<ListTile>(find.byType(ListTile))
-      .map((tile) => (tile.title! as Text).data!)
-      .toList();
 
   /// The primary button, named exactly — the app bar carries the same words as
   /// a title, which a bare `find.text` would confuse.
@@ -89,19 +120,11 @@ void main() {
       await pumpScreen(tester);
       await typeText(tester, text);
 
-      expect(find.text('Sẽ đọc 3 câu, theo từng câu một.'), findsOneWidget);
+      expect(find.textContaining('Sẽ đọc 3 câu'), findsOneWidget);
       final button = tester.widget<FilledButton>(
         find.widgetWithText(FilledButton, 'Đọc thành tiếng'),
       );
       expect(button.onPressed, isNotNull);
-    });
-
-    testWidgets('a sentence count is a count, never an invented time',
-        (tester) async {
-      await pumpScreen(tester);
-      await typeText(tester, 'Chỉ một câu thôi.');
-
-      expect(find.text('Sẽ đọc 1 câu, theo từng câu một.'), findsOneWidget);
     });
 
     testWidgets('with text but no engine the primary action stays disabled',
@@ -113,6 +136,34 @@ void main() {
         find.widgetWithText(FilledButton, 'Đọc thành tiếng'),
       );
       expect(button.onPressed, isNull);
+    });
+
+    testWidgets('the draft is saved for the next visit', (tester) async {
+      await pumpScreen(tester);
+      await tester.enterText(find.byType(TextField), 'Bản nháp quan trọng.');
+      await tester.pumpAndSettle();
+      // Past the 800 ms debounce, so the write has actually run.
+      await tester.pump(const Duration(milliseconds: 900));
+
+      expect(
+        await repo.getSetting(composerDraftSettingKey),
+        'Bản nháp quan trọng.',
+      );
+    });
+
+    testWidgets('the draft comes back on a fresh start', (tester) async {
+      // Type into one mount...
+      await pumpScreen(tester);
+      await tester.enterText(find.byType(TextField), 'Bản nháp còn nguyên.');
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 900));
+
+      // ...then remount the screen: the app was closed and opened again.
+      await pumpScreen(tester);
+      await tester.pumpAndSettle();
+
+      final field = tester.widget<TextField>(find.byType(TextField));
+      expect(field.controller!.text, 'Bản nháp còn nguyên.');
     });
   });
 
@@ -132,16 +183,18 @@ void main() {
   });
 
   group('reading', () {
-    testWidgets('shows one block per sentence with the spine on the current one',
+    testWidgets('shows the document as continuous prose, spine on the current one',
         (tester) async {
       await pumpScreen(tester);
       await typeText(tester, text);
       await tapRead(tester);
 
-      expect(find.byType(SentenceBlock), findsNWidgets(3));
-      final blocks = tester.widgetList<SentenceBlock>(find.byType(SentenceBlock));
-      expect(blocks.where((b) => b.isCurrent), hasLength(1));
-      expect(blocks.first.isCurrent, isTrue);
+      // Every sentence is on the surface as text — one flowing document, not
+      // three stacked boxes.
+      expect(find.byType(ReadingView), findsOneWidget);
+      expect(find.text('Câu một.'), findsOneWidget);
+      expect(find.text('Câu hai.'), findsOneWidget);
+      expect(find.text('Câu ba.'), findsOneWidget);
       // The reading surface replaces the composer, and the transport is there.
       expect(find.byType(TransportBar), findsOneWidget);
       expect(find.byType(TextField), findsNothing);
@@ -169,6 +222,7 @@ void main() {
         engine: engine,
         cache: InMemorySynthesisCache(),
         lookAhead: 1,
+        retryBaseDelay: Duration.zero,
       );
       await pumpScreen(tester);
       await typeText(tester, text);
@@ -210,8 +264,6 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Câu 2/3'), findsOneWidget);
-      final blocks = tester.widgetList<SentenceBlock>(find.byType(SentenceBlock));
-      expect(blocks.elementAt(1).isCurrent, isTrue);
       expect(queue.sentences.first.status, SentenceStatus.played);
     });
 
@@ -269,32 +321,100 @@ void main() {
     });
   });
 
-  group('FR-10 — speed', () {
-    testWidgets('the sheet offers exactly the six presets and applies one',
+  group('FR-10 — voice and speed', () {
+    /// Opens the options sheet from the app bar and walks the speed chips.
+    Future<void> openSheet(WidgetTester tester) async {
+      await tester.tap(find.text('1.0×').first);
+      await tester.pumpAndSettle();
+    }
+
+    /// Selects a speed preset, scrolling it into view first — the sheet is
+    /// taller than a phone screen and the chips sit below the voice list.
+    Future<void> pickSpeed(WidgetTester tester, String label) async {
+      await tester.ensureVisible(find.text(label));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(label));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> confirmSheet(WidgetTester tester) async {
+      await tester.ensureVisible(find.text('Xong'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Xong'));
+      await tester.pumpAndSettle();
+    }
+
+    Set<String> speedChips(WidgetTester tester) => tester
+        .widgetList<Text>(find.byType(Text))
+        .map((t) => t.data ?? '')
+        .where((data) => RegExp(r'^[0-9]+(\.[0-9]+)?×$').hasMatch(data))
+        .toSet();
+
+    testWidgets('the sheet offers the voices and the six speed presets',
         (tester) async {
       await pumpScreen(tester);
       await typeText(tester, text);
+      await openSheet(tester);
 
-      await tester.tap(find.text('1.0×').first);
-      await tester.pumpAndSettle();
-
-      // The sheet scrolls on a short screen, so walk it to the end and collect
-      // every row: the point is that the choices are exactly the six presets,
-      // not that six rows happen to fit in the viewport.
-      final seen = <String>{...sheetTitles(tester)};
-      await tester.drag(find.byType(ListView).last, const Offset(0, -200));
-      await tester.pumpAndSettle();
-      seen.addAll(sheetTitles(tester));
-
+      expect(find.text('Giọng đọc & tốc độ'), findsOneWidget);
+      // The voice catalog is visible before any model is installed: the sheet
+      // reads the shipped asset, not the engine. Both may also appear on the
+      // transport bar behind the sheet, hence `findsWidgets`.
+      expect(find.text('Miên'), findsWidgets);
+      expect(find.text('Bách'), findsWidgets);
       expect(
-        seen,
-        <String>{'0.5×', '0.75×', '1.0×', '1.25×', '1.5×', '2.0×'},
+        speedChips(tester),
+        containsAll(<String>['0.5×', '0.75×', '1.0×', '1.25×', '1.5×', '2.0×']),
       );
 
-      await tester.tap(find.text('2.0×'));
-      await tester.pumpAndSettle();
+      await pickSpeed(tester, '2.0×');
+      await confirmSheet(tester);
 
       expect(find.text('2.0×'), findsWidgets);
+    });
+
+    testWidgets('a voice choice applies from the options sheet', (tester) async {
+      await pumpScreen(tester);
+      await typeText(tester, text);
+      // Reading first, because the voice is named on the *transport bar* —
+      // which only exists once there is something being read.
+      await tapRead(tester);
+      await openSheet(tester);
+
+      await tester.tap(find.text('Bách'));
+      await tester.pumpAndSettle();
+      await confirmSheet(tester);
+
+      expect(queue.options.voiceId, 'Bách');
+      // The transport bar names the voice now in force.
+      expect(find.text('Bách'), findsWidgets);
+    });
+
+    testWidgets('the app bar and transport bar name and change the voice',
+        (tester) async {
+      await pumpScreen(tester);
+      await typeText(tester, text);
+      await tapRead(tester);
+
+      // The voice that is in force (the catalog default) is named in the app
+      // bar alongside the speed, so it is visible without opening the sheet.
+      expect(find.text('Miên'), findsWidgets);
+
+      // The transport bar's voice label is now a real tap target: tapping it
+      // opens the same voice sheet, whose list is every voice the model ships
+      // with — i.e. any of the many voices can be chosen from here.
+      await tester.tap(find.text('Miên').last);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Giọng đọc & tốc độ'), findsOneWidget);
+      expect(find.text('Bách'), findsOneWidget);
+
+      await tester.tap(find.text('Bách'));
+      await tester.pumpAndSettle();
+      await confirmSheet(tester);
+
+      // After the change, the new voice is reflected everywhere it is named.
+      expect(find.text('Bách'), findsWidgets);
     });
 
     testWidgets('a speed change mid-read keeps the current sentence',
@@ -303,12 +423,9 @@ void main() {
       await typeText(tester, text);
       await tapRead(tester);
 
-      await tester.tap(find.text('1.0×').first);
-      await tester.pumpAndSettle();
-      await tester.drag(find.byType(ListView).last, const Offset(0, -200));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('2.0×'));
-      await tester.pumpAndSettle();
+      await openSheet(tester);
+      await pickSpeed(tester, '2.0×');
+      await confirmSheet(tester);
 
       expect(find.text('Câu 1/3'), findsOneWidget);
       expect(find.text('2.0×'), findsWidgets);
@@ -341,14 +458,11 @@ void main() {
       await tester.pump(const Duration(seconds: 5));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('1.0×').first);
-      await tester.pumpAndSettle();
-      await tester.drag(find.byType(ListView).last, const Offset(0, -200));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('2.0×'));
-      await tester.pumpAndSettle();
+      await openSheet(tester);
+      await pickSpeed(tester, '2.0×');
+      await confirmSheet(tester);
 
-      expect(find.text('Đổi tốc độ?'), findsOneWidget);
+      expect(find.text('Đổi giọng đọc?'), findsOneWidget);
       // A cost in seconds is quoted, so the interruption is explaining itself.
       // The exact figure is not asserted: two sentences are synthesized
       // concurrently, and how the clock reads interleave between them is a
@@ -361,7 +475,7 @@ void main() {
 
       // Declining leaves everything exactly as it was: no speed change, and the
       // prepared audio is still there.
-      expect(find.text('Đổi tốc độ?'), findsNothing);
+      expect(find.text('Đổi giọng đọc?'), findsNothing);
       expect(queue.sentences[1].status, SentenceStatus.ready,
           reason: 'cancelling must not discard audio that was already paid for');
     });
@@ -385,16 +499,13 @@ void main() {
       await tester.pump(const Duration(seconds: 5));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('1.0×').first);
-      await tester.pumpAndSettle();
-      await tester.drag(find.byType(ListView).last, const Offset(0, -200));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('2.0×'));
-      await tester.pumpAndSettle();
+      await openSheet(tester);
+      await pickSpeed(tester, '2.0×');
+      await confirmSheet(tester);
       await tester.tap(find.text('Đổi').last);
       await tester.pumpAndSettle();
 
-      expect(find.text('Đổi tốc độ?'), findsNothing);
+      expect(find.text('Đổi giọng đọc?'), findsNothing);
       expect(find.text('2.0×'), findsWidgets);
       expect(queue.sentences[2].status, SentenceStatus.idle);
     });

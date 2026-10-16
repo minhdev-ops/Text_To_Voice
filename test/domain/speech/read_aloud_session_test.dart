@@ -26,6 +26,9 @@ void main() {
       engine: engine,
       cache: InMemorySynthesisCache(),
       lookAhead: 1,
+      // Zero: the retry backoff is real time, and these tests are about the
+      // session's rules, not about how long a transient failure waits.
+      retryBaseDelay: Duration.zero,
     );
     session = ReadAloudSession(queue: queue, output: output);
   });

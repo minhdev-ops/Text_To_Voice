@@ -29,6 +29,7 @@ void main() {
       engine: engine,
       cache: InMemorySynthesisCache(),
       lookAhead: 1,
+      retryBaseDelay: Duration.zero,
     );
     session = ReadAloudSession(queue: queue, output: output);
   });

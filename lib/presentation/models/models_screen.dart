@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../ai/models/model_install_service.dart';
+import '../../ai/models/model_variant.dart';
 import '../../ai/models/vieneu_model_manifest.dart';
 import '../../core/theme/tokens.dart';
-import 'model_providers.dart';
+import 'model_providers.dart'
+    show activeModelVariantProvider, modelInstallControllerProvider, setActiveModelVariant;
 
 /// Third destination: the model inventory (SRS FR-20).
 ///
@@ -23,15 +25,48 @@ class ModelsScreen extends ConsumerWidget {
     final state = ref.watch(modelInstallControllerProvider);
     final controller = ref.read(modelInstallControllerProvider.notifier);
     final palette = AppPalette.of(Theme.of(context).brightness);
+    final variant = ref.watch(activeModelVariantProvider);
+    final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text(navLabel)),
+      appBar: AppBar(
+        title: const Text(navLabel),
+        actions: <Widget>[
+          Padding(
+            padding: const EdgeInsets.only(right: Spacing.s12),
+            child: DropdownButton<ModelVariant>(
+              value: variant,
+               items: <DropdownMenuItem<ModelVariant>>[
+                for (final v in ModelVariant.all)
+                  DropdownMenuItem<ModelVariant>(
+                    value: v,
+                    child: Row(
+                      children: <Widget>[
+                        Text(v.quantization),
+                        const SizedBox(width: Spacing.s4),
+                        Text('(${v.totalBytesEstimate ~/ (1000 * 1000)} MB)'),
+                      ],
+                    ),
+                  ),
+              ].toList(),
+              onChanged: (ModelVariant? next) {
+                if (next == null || next == variant) return;
+                setActiveModelVariant(ref, next);
+              },
+              style: theme.textTheme.bodyMedium,
+              underline: const SizedBox.shrink(),
+            ),
+          ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.only(bottom: Spacing.s32),
         children: <Widget>[
+          _VariantSubtitle(variant: variant, palette: palette),
           _InstrumentStrip(state: state, palette: palette),
           const Divider(height: 1),
           _ModelRow(
+            variant: variant,
             state: state,
             palette: palette,
             onInstall: controller.install,
@@ -168,6 +203,7 @@ class _Figure extends StatelessWidget {
 /// license, always.
 class _ModelRow extends StatelessWidget {
   const _ModelRow({
+    required this.variant,
     required this.state,
     required this.palette,
     required this.onInstall,
@@ -176,6 +212,7 @@ class _ModelRow extends StatelessWidget {
     required this.onDelete,
   });
 
+  final ModelVariant variant;
   final ModelInstallState state;
   final AppPalette palette;
   final Future<void> Function() onInstall;
@@ -217,7 +254,7 @@ class _ModelRow extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
                     Text(
-                      VieNeuModelManifest.checkpointName,
+                      variant.checkpointName,
                       style: TextStyle(
                         fontFamily: FontFamilies.display,
                         fontSize: TypeScale.reading,
@@ -226,9 +263,9 @@ class _ModelRow extends StatelessWidget {
                     ),
                     const SizedBox(height: Spacing.s4),
                     Text(
-                      '${VieNeuModelManifest.quantization} · '
-                      '${VieNeuModelManifest.sampleRate ~/ 1000} kHz · '
-                      '${VieNeuModelManifest.formatBytes(state.totalBytes)}',
+                      '${variant.quantization} · '
+                      '${variant.sampleRate ~/ 1000} kHz · '
+                      '${variant.totalBytesEstimate ~/ (1000 * 1000)} MB',
                       style: TextStyle(
                         fontFamily: FontFamilies.body,
                         fontSize: TypeScale.label,
@@ -277,7 +314,7 @@ class _ModelRow extends StatelessWidget {
           // The license line is part of the row, not a detail sheet: §47 asks
           // for the exact string to be visible wherever a checkpoint is offered.
           Text(
-            '${VieNeuModelManifest.license} · ${VieNeuModelManifest.licenseSource}',
+            '${variant.license} · ${variant.licenseSource}',
             style: TextStyle(
               fontFamily: FontFamilies.body,
               fontSize: TypeScale.caption,
@@ -398,6 +435,35 @@ class _PhonemizerNote extends StatelessWidget {
         'Trên Android, thư viện chuyển ngữ âm tiếng Việt (sea-g2p) chưa có bản '
         'dựng sẵn từ nhà phát hành. Cần dựng bằng tool/build_g2p.sh rồi đặt vào '
         'android/app/src/main/jniLibs/ để đọc được văn bản trên thiết bị.',
+        style: TextStyle(
+          fontFamily: FontFamilies.body,
+          fontSize: TypeScale.caption,
+          color: palette.textMuted,
+        ),
+      ),
+    );
+  }
+}
+
+/// A one-line subtitle under the AppBar explaining the selected variant.
+class _VariantSubtitle extends StatelessWidget {
+  const _VariantSubtitle({required this.variant, required this.palette});
+
+  final ModelVariant variant;
+  final AppPalette palette;
+
+  @override
+  Widget build(BuildContext context) {
+    final size = ModelVariant.formatBytes(variant.totalBytesEstimate);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        Spacing.gutter,
+        Spacing.s12,
+        Spacing.gutter,
+        Spacing.s8,
+      ),
+      child: Text(
+        '${variant.summary} · ~$size',
         style: TextStyle(
           fontFamily: FontFamilies.body,
           fontSize: TypeScale.caption,

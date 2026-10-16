@@ -57,7 +57,7 @@ void main() {
     () async {
       // ---- 1. Staging check --------------------------------------------------
       final missing = <String>[];
-      for (final spec in VieNeuModelManifest.filesFor('linux')) {
+      for (final spec in VieNeuModelManifest().filesFor('linux')) {
         final segments = spec.relativePath.split('/');
         // Manifest paths are hyphenated; staging dirs are underscored. Only the
         // first segment differs, so rename just that one.

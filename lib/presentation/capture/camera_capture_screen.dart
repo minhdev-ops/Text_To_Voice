@@ -1,3 +1,4 @@
+import 'dart:io' show File;
 import 'dart:typed_data' show Uint8List;
 
 import 'package:flutter/material.dart';
@@ -6,17 +7,18 @@ import 'package:go_router/go_router.dart';
 import 'package:file_picker/file_picker.dart';
 
 import '../../core/result/result.dart';
+import '../../core/storage/app_storage.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/semantic_colors.dart';
 import '../../core/theme/tokens.dart';
-import '../../domain/import/import_service.dart';
 import '../../domain/import/file_validation.dart';
 import '../../domain/models/imported_file.dart';
 import '../../domain/models/ocr.dart' show OcrLine, OcrResult;
 import '../../domain/models/extraction.dart' show ExtractionResult;
-import '../../domain/engines/progress.dart' show JobStage;
+import '../../domain/ocr/ocr_structurer.dart' show StructuredSection;
 import 'capture_providers.dart';
 import 'camera_source.dart' show CaptureResolution;
+import '../library/library_providers.dart' show importServiceProvider;
 import 'scan_review_screen.dart';
 
 /// Camera → crop → enhance → recognize (FR-03/FR-04, UX spec §4).
@@ -101,7 +103,8 @@ class _CameraCaptureScreenState extends ConsumerState<CameraCaptureScreen> {
   ///
   /// For images: adds directly to the capture flow for OCR processing.
   /// For documents (PDF, text, markdown, EPUB): extracts text via ImportService
-  /// and creates a CapturedPage with the extracted content.
+  /// and appends it as a text page — no image pipeline, because those bytes are
+  /// not a photograph.
   Future<void> _chooseFile(BuildContext context, CaptureController controller) async {
     try {
       final result = await FilePicker.pickFiles(
@@ -123,7 +126,22 @@ class _CameraCaptureScreenState extends ConsumerState<CameraCaptureScreen> {
       }
 
       final file = result.first;
-      if (file == null) {
+
+      // The size cap is checked **before** the bytes are buffered: reading a
+      // multi-hundred-MB file into memory first and rejecting it afterwards is
+      // the out-of-memory kill the cap exists to prevent.
+      final pickedLength = await file.length();
+      if (pickedLength != null && pickedLength > maxImportBytes) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context)
+            ..clearSnackBars()
+            ..showSnackBar(SnackBar(
+              content: Text(
+                'Tệp lớn hơn ${maxImportBytes ~/ (1024 * 1024)} MB nên chưa '
+                'xử lý được.',
+              ),
+            ));
+        }
         return;
       }
 
@@ -163,11 +181,27 @@ class _CameraCaptureScreenState extends ConsumerState<CameraCaptureScreen> {
       }
       mimeType ??= 'application/octet-stream';
 
+      // A provider may hand back a URI that is not a local path. The extractors
+      // read through the path, so the bytes are materialized rather than the
+      // nullable `path` being asserted non-null — the `!` that used to be here
+      // was a crash instead of a fallback.
+      final path = await _materializePath(file, fileBytes);
+      if (path == null) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context)
+            ..clearSnackBars()
+            ..showSnackBar(const SnackBar(
+              content: Text('Không mở được tệp đã chọn. Thử chọn tệp khác.'),
+            ));
+        }
+        return;
+      }
+
       final importedFile = ImportedFile(
         name: file.name,
-        path: file.path!,
+        path: path,
         mimeType: mimeType,
-        size: await file.length() ?? fileBytes.length,
+        size: pickedLength ?? fileBytes.length,
         headBytes: headBytes,
       );
 
@@ -197,26 +231,20 @@ class _CameraCaptureScreenState extends ConsumerState<CameraCaptureScreen> {
         case FileKind.text:
         case FileKind.markdown:
         case FileKind.epub:
-          // Document files - extract text
-          final importService = const ImportService();
-          final extractResult = await importService.importFile(
-            importedFile,
-            onProgress: (progress, stage) {
-              // Update progress if needed
-              if (stage == JobStage.done && context.mounted) {
-                ScaffoldMessenger.of(context)
-                  ..clearSnackBars()
-                  ..showSnackBar(const SnackBar(
-                    content: Text('Đã nhập tệp thành công!'),
-                  ));
-              }
-            },
-          );
+          // Document files - extract text.
+          //
+          // The shared provider, not a bare `const ImportService()`: the default
+          // constructor leaves `ocr`/`structurer`/`scanner` null, so an image or a
+          // scanned PDF picked *here* would fail with "chưa được bật" while the
+          // very same file imported from the Library screen worked. One pipeline,
+          // one recognizer — which is the whole point of the provider.
+          final importService = ref.read(importServiceProvider);
+          final extractResult = await importService.importFile(importedFile);
 
           if (extractResult case Success<ExtractionResult>(:final value)) {
-            // Convert extracted text to CapturedPage
+            // Convert extracted text to a page the tray can review.
             final text = value.text;
-            if (text == null || text.trim().isEmpty) {
+            if (text.trim().isEmpty) {
               if (context.mounted) {
                 ScaffoldMessenger.of(context)
                   ..clearSnackBars()
@@ -225,21 +253,22 @@ class _CameraCaptureScreenState extends ConsumerState<CameraCaptureScreen> {
                   ));
               }
             } else {
-              // Create a CapturedPage from the extracted text
-              final page = await _createDocumentPage(
+              final structured = _structureText(text);
+              await controller.addExtractedPage(
                 bytes: fileBytes,
                 text: text,
-                fileName: file.name,
-                controller: controller,
+                ocr: structured.ocr,
+                sections: structured.sections,
               );
-              if (page != null && context.mounted) {
-                // Add the page to the capture state
-                final pages = <CapturedPage>[...controller.state.pages, page];
-                controller.state = controller.state.copyWith(
-                  pages: pages,
-                  currentPage: pages.length - 1,
-                );
-                await controller.processPage(page.index);
+              // Announced here, after the result is known: the old success
+              // toast fired from the progress callback, which runs even when
+              // extraction then failed.
+              if (context.mounted) {
+                ScaffoldMessenger.of(context)
+                  ..clearSnackBars()
+                  ..showSnackBar(SnackBar(
+                    content: Text('Đã nhập "${file.name}" thành công!'),
+                  ));
               }
             }
           } else if (extractResult case Failure<ExtractionResult>(:final failure)) {
@@ -260,58 +289,54 @@ class _CameraCaptureScreenState extends ConsumerState<CameraCaptureScreen> {
     }
   }
 
-  /// Creates a CapturedPage from extracted document text.
-  ///
-  /// Uses the OCR structurer to convert plain text into structured sections
-  /// so it integrates seamlessly with the existing capture flow.
-  Future<CapturedPage?> _createDocumentPage({
-    required Uint8List bytes,
-    required String text,
-    required String fileName,
-    required CaptureController controller,
-  }) async {
+  /// A local path the extractors can read, or `null` when the bytes could not
+  /// be written anywhere. A no-op when the picker already gave a real path.
+  static Future<String?> _materializePath(PlatformFile file, Uint8List bytes) async {
+    final existing = file.path;
+    if (existing != null && File(existing).existsSync()) return existing;
     try {
-      // Convert text to OcrLine objects for the structurer
-      final lines = text.split('\n').map((line) {
-        return OcrLine(
-          text: line.trim(),
-          confidence: 1.0,
-          position: null,
-          pageNumber: 1,
-        );
-      }).where((line) => line.text.isNotEmpty).toList();
+      final tempPath = appStorage.tempFilePath(
+        'capture-import',
+        file.extension == null || file.extension!.isEmpty
+            ? 'bin'
+            : file.extension!.toLowerCase(),
+      );
+      await File(tempPath).writeAsBytes(bytes, flush: true);
+      return tempPath;
+    } catch (_) {
+      return null;
+    }
+  }
 
-      if (lines.isEmpty) {
-        return null;
-      }
+  /// Plain text → lines → structure, so an extracted document lands in the tray
+  /// with the same sectioning the OCR path produces.
+  ///
+  /// Returns nothing worth keeping when the text has no lines: the caller
+  /// reports that instead of storing an empty page.
+  ({OcrResult? ocr, List<StructuredSection> sections}) _structureText(String text) {
+    final lines = text.split('\n').map((line) {
+      return OcrLine(
+        text: line.trim(),
+        confidence: 1.0,
+        position: null,
+        pageNumber: 1,
+      );
+    }).where((line) => line.text.isNotEmpty).toList();
 
+    if (lines.isEmpty) {
+      return (ocr: null, sections: const <StructuredSection>[]);
+    }
+
+    try {
       // Use the OCR structurer to convert lines to structured sections
       final structurer = ref.read(ocrStructurerProvider);
       structurer.reset();
       final sections = structurer.sections(lines, pageNumber: 1);
-
-      return CapturedPage(
-        index: controller.state.pages.length,
-        originalBytes: bytes,
-        scan: null,
-        ocr: OcrResult(lines: lines),
-        sections: sections,
-        text: text,
-        failureMessage: null,
-        textPending: false,
-      );
-    } catch (e) {
-      // If structuring fails, create a simple page with just the text
-      return CapturedPage(
-        index: controller.state.pages.length,
-        originalBytes: bytes,
-        scan: null,
-        ocr: null,
-        sections: const [],
-        text: text,
-        failureMessage: null,
-        textPending: false,
-      );
+      return (ocr: OcrResult(lines: lines), sections: sections);
+    } catch (_) {
+      // If structuring fails the text is still the document; the reader shows
+      // it as one flow rather than losing it.
+      return (ocr: OcrResult(lines: lines), sections: const <StructuredSection>[]);
     }
   }
 }

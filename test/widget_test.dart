@@ -113,7 +113,9 @@ void main() {
 
     await tester.enterText(find.byType(TextField), 'Xin chào Việt Nam');
     await tester.pumpAndSettle();
-    expect(find.text('Sẽ đọc 1 câu, theo từng câu một.'), findsOneWidget);
+    // The count is a count, and the line also states that the draft is saved —
+    // which is a promise the composer now keeps on every pause in typing.
+    expect(find.textContaining('Sẽ đọc 1 câu'), findsOneWidget);
 
     final button = tester.widget<FilledButton>(
       find.widgetWithText(FilledButton, 'Đọc thành tiếng'),

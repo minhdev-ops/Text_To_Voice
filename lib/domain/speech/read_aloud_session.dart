@@ -183,16 +183,27 @@ class ReadAloudSession {
 
   TtsOptions get options => _options;
 
-  /// Loads [rawText] and starts reading it from the first sentence.
-  Future<void> read(String rawText, {TtsOptions? options}) async {
+  /// Loads [rawText] and starts reading it from [startIndex].
+  ///
+  /// The start is chosen *before* the first synthesis: a resume or a
+  /// search-hit landing that had to wait for sentence 0 to be synthesized
+  /// (~15 s on a phone) would look like a dead button.
+  Future<void> read(
+    String rawText, {
+    TtsOptions? options,
+    int startIndex = 0,
+  }) async {
     if (options != null) _options = options;
     _request++;
     await _output.stop();
 
     final sentences = await _queue.load(rawText, options: _options);
+    final start = sentences.isEmpty
+        ? 0
+        : startIndex.clamp(0, sentences.length - 1);
     _set(_state.copyWith(
       sentences: sentences,
-      currentIndex: 0,
+      currentIndex: start,
       isPlaying: false,
       positionInSentence: Duration.zero,
       failedSentenceIndex: null,
@@ -204,7 +215,7 @@ class ReadAloudSession {
       AppLog.info('speech.read.empty');
       return;
     }
-    await _playFrom(0);
+    await _playFrom(start);
   }
 
   Future<void> play() async {
@@ -238,21 +249,57 @@ class ReadAloudSession {
   /// The sentence being spoken keeps the audio it started with, so its words do
   /// not change rate mid-sentence; everything after it is re-synthesized.
   Future<void> setSpeed(double speed) async {
-    final clamped = speed.clamp(TtsOptions.minSpeed, TtsOptions.maxSpeed);
-    if (clamped == _options.speed) return;
-
-    _options = _options.copyWith(speed: clamped);
-    _queue.invalidateFrom(_state.currentIndex + 1, options: _options);
-    await _output.setSpeed(clamped);
-    _set(_state.copyWith(finished: false));
+    if (speed.clamp(TtsOptions.minSpeed, TtsOptions.maxSpeed) ==
+        _options.speed) {
+      return;
+    }
+    await setOptions(_options.copyWith(speed: speed));
   }
 
-  /// Volume is a playback property, not a synthesis one: it changes the sound
-  /// without invalidating a single cached sentence (see [TtsOptions.cacheKey]).
-  Future<void> setVolume(double volume) async {
-    _options = _options.copyWith(volume: volume);
-    await _output.setVolume(_options.volume);
+  /// Changes the voice for the **next** sentence onward.
+  ///
+  /// Same contract as [setSpeed]: the sentence being spoken keeps the voice it
+  /// started with, so the reader never hears a timbre change mid-sentence, and
+  /// everything after it is re-synthesized with the new speaker.
+  Future<void> setVoice(String? voiceId) async {
+    if (voiceId == _options.voiceId) return;
+    await setOptions(TtsOptions(
+      voiceId: voiceId,
+      speed: _options.speed,
+      volume: _options.volume,
+      format: _options.format,
+    ));
   }
+
+  /// Applies a whole set of synthesis options from the **next** sentence on.
+  ///
+  /// One path for every option change (voice, speed, volume) so the invalidation
+  /// rule lives in exactly one place: anything that changes the waveform
+  /// invalidates the cached audio after the current sentence; volume — applied
+  /// by the player, not the engine — never invalidates anything.
+  Future<void> setOptions(TtsOptions options) async {
+    final waveformChanged = options.voiceId != _options.voiceId ||
+        options.speed != _options.speed ||
+        options.format != _options.format;
+
+    final previous = _options;
+    _options = options;
+
+    if (waveformChanged) {
+      _queue.invalidateFrom(_state.currentIndex + 1, options: _options);
+      _set(_state.copyWith(finished: false));
+    }
+    if (options.volume != previous.volume) {
+      await _output.setVolume(options.volume);
+    }
+    if (options.speed != previous.speed) {
+      await _output.setSpeed(options.speed);
+    }
+  }
+
+  /// Volume-only convenience over [setOptions].
+  Future<void> setVolume(double volume) =>
+      setOptions(_options.copyWith(volume: volume));
 
   /// Dismisses the skipped-sentence banner without retrying it.
   void dismissFailure() =>

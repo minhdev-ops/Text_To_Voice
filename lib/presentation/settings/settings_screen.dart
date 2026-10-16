@@ -4,12 +4,11 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/router/app_router.dart' show RoutePaths;
 import '../../core/storage/app_storage.dart';
-import '../../core/theme/app_theme.dart';
 import '../../core/theme/semantic_colors.dart';
-import '../../core/theme/tokens.dart';
 import '../../data/providers.dart';
-import '../../domain/models/tts.dart' show TtsOptions, SpeechFormat, VoicePreset;
+import '../../domain/models/tts.dart' show SpeechFormat, VoicePreset;
 import '../library/library_providers.dart';
+import 'memory_settings.dart';
 import 'theme_mode_provider.dart';
 
 /// Fourth destination: defaults, storage, about and the privacy statement.
@@ -21,15 +20,13 @@ class SettingsScreen extends ConsumerWidget {
   static const String location = '/settings';
   static const String navLabel = 'Cài đặt';
 
-  static const List<(ThemeMode, String)> _themeOptions =
-      <(ThemeMode, String)>[
+  static const List<(ThemeMode, String)> _themeOptions = <(ThemeMode, String)>[
     (ThemeMode.system, 'Theo hệ thống'),
     (ThemeMode.light, 'Sáng'),
     (ThemeMode.dark, 'Tối'),
   ];
 
-  static const List<(double, String)> speedOptions =
-      <(double, String)>[
+  static const List<(double, String)> speedOptions = <(double, String)>[
     (0.5, '0.5x'),
     (0.75, '0.75x'),
     (1.0, '1.0x'),
@@ -40,16 +37,14 @@ class SettingsScreen extends ConsumerWidget {
 
   static const List<(SpeechFormat, String)> formatOptions =
       <(SpeechFormat, String)>[
-    (SpeechFormat.wav, 'WAV (chất lượng cao, không nén)'),
-    (SpeechFormat.mp3, 'MP3 (cần bộ mã hóa trên máy)'),
-  ];
+        (SpeechFormat.wav, 'WAV (chất lượng cao, không nén)'),
+        (SpeechFormat.mp3, 'MP3 (cần bộ mã hóa trên máy)'),
+      ];
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final themeMode = ref.watch(themeModeProvider);
-    final text = Theme.of(context).textTheme;
     final semantic = Theme.of(context).semanticColors;
-    final repo = ref.watch(documentRepositoryProvider);
 
     return Scaffold(
       appBar: AppBar(title: const Text(navLabel)),
@@ -61,7 +56,10 @@ class SettingsScreen extends ConsumerWidget {
             ListTile(
               title: Text(label),
               trailing: mode == themeMode
-                  ? Icon(Icons.check, color: Theme.of(context).colorScheme.primary)
+                  ? Icon(
+                      Icons.check,
+                      color: Theme.of(context).colorScheme.primary,
+                    )
                   : null,
               onTap: () => ref.read(themeModeProvider.notifier).select(mode),
             ),
@@ -93,7 +91,9 @@ class SettingsScreen extends ConsumerWidget {
           ListTile(
             leading: Icon(Icons.delete_sweep_outlined, color: semantic.danger),
             title: const Text('Dọn dẹp file rác'),
-            subtitle: const Text('Xóa file tạm, audio cache cũ, tác vụ đã hoàn thành'),
+            subtitle: const Text(
+              'Xóa file tạm, audio cache cũ, tác vụ đã hoàn thành',
+            ),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => _showCleanupDialog(context, ref),
           ),
@@ -105,7 +105,9 @@ class SettingsScreen extends ConsumerWidget {
           ListTile(
             leading: const Icon(Icons.privacy_tip_outlined),
             title: const Text('Cam kết quyền riêng tư'),
-            subtitle: const Text('Xem cam kết chi tiết về cách ứng dụng xử lý dữ liệu của bạn'),
+            subtitle: const Text(
+              'Xem cam kết chi tiết về cách ứng dụng xử lý dữ liệu của bạn',
+            ),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => _showPrivacyDialog(context),
           ),
@@ -161,33 +163,47 @@ class SettingsScreen extends ConsumerWidget {
           ),
           FilledButton(
             onPressed: () async {
-              Navigator.pop(context);
+              // Captured **before** the pop: the dialog's context unmounts the
+              // moment it closes, and the outcome — or a failure — still has to
+              // be reported. Without this the summary was silently skipped and
+              // a thrown cleanup left "Đang dọn dẹp..." on screen forever.
+              final messenger = ScaffoldMessenger.of(context);
               final storage = appStorage;
               final repo = ref.read(documentRepositoryProvider);
+              Navigator.pop(context);
 
-              // Show progress
-              if (!context.mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Đang dọn dẹp...')),
-              );
+              messenger
+                ..clearSnackBars()
+                ..showSnackBar(
+                  const SnackBar(content: Text('Đang dọn dẹp...')),
+                );
 
-              final freedTemp = await storage.cleanTemp();
-              final freedJobs = await repo.cleanupOldJobs(maxAgeDays: 7);
-              final freedAudio = await repo.cleanupAudioCache(maxAgeDays: 30);
-              final freedOrphans = await repo.cleanupOrphanFiles();
+              try {
+                final freedTemp = await storage.cleanTemp();
+                final freedJobs = await repo.cleanupOldJobs(maxAgeDays: 7);
+                final freedAudio = await repo.cleanupAudioCache(maxAgeDays: 30);
+                final freedOrphans = await repo.cleanupOrphanFiles();
 
-              if (!context.mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    'Đã dọn dẹp: ${_formatBytes(freedTemp + freedOrphans.freedBytes)} '
-                    '(temp: ${_formatBytes(freedTemp)}, '
-                    'audio cache: $freedAudio entries, '
-                    'jobs: $freedJobs, '
-                    'orphan files: ${freedOrphans.deletedImages})',
-                  ),
-                ),
-              );
+                messenger
+                  ..clearSnackBars()
+                  ..showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        'Đã dọn dẹp: ${_formatBytes(freedTemp + freedOrphans.freedBytes)} '
+                        '(temp: ${_formatBytes(freedTemp)}, '
+                        'audio cache: $freedAudio entries, '
+                        'jobs: $freedJobs, '
+                        'orphan files: ${freedOrphans.deletedImages})',
+                      ),
+                    ),
+                  );
+              } catch (error) {
+                messenger
+                  ..clearSnackBars()
+                  ..showSnackBar(
+                    SnackBar(content: Text('Dọn dẹp thất bại: $error')),
+                  );
+              }
             },
             child: const Text('Dọn dẹp'),
           ),
@@ -211,12 +227,24 @@ class SettingsScreen extends ConsumerWidget {
                 style: TextStyle(fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 12),
-              _privacyBullet('Tất cả tài liệu, hình ảnh, âm thanh và mô hình AI được lưu trữ **chỉ trong bộ nhớ riêng của ứng dụng** trên thiết bị của bạn.'),
-              _privacyBullet('Không có dữ liệu nào được gửi đến máy chủ, đám mây hoặc bên thứ ba nào.'),
-              _privacyBullet('Kết nối mạng **chỉ** được sử dụng để tải xuống mô hình TTS (khi bạn chọn cài đặt) — và chỉ khi bạn đồng ý.'),
-              _privacyBullet('OCR sử dụng Google ML Kit, có thể gửi dữ liệu đo lường ẩn danh (kích thước ảnh, độ trễ, phiên bản) đến Google. Nội dung ảnh và văn bản **không** được gửi.'),
-              _privacyBullet('Bạn có toàn quyền xóa mọi dữ liệu bất kỳ lúc nào qua tính năng "Dọn dẹp" hoặc xóa tài liệu.'),
-              _privacyBullet('Không theo dõi, không quảng cáo, không phân tích hành vi người dùng.'),
+              _privacyBullet(
+                'Tất cả tài liệu, hình ảnh, âm thanh và mô hình AI được lưu trữ **chỉ trong bộ nhớ riêng của ứng dụng** trên thiết bị của bạn.',
+              ),
+              _privacyBullet(
+                'Không có dữ liệu nào được gửi đến máy chủ, đám mây hoặc bên thứ ba nào.',
+              ),
+              _privacyBullet(
+                'Kết nối mạng **chỉ** được sử dụng để tải xuống mô hình TTS (khi bạn chọn cài đặt) — và chỉ khi bạn đồng ý.',
+              ),
+              _privacyBullet(
+                'OCR sử dụng Google ML Kit, có thể gửi dữ liệu đo lường ẩn danh (kích thước ảnh, độ trễ, phiên bản) đến Google. Nội dung ảnh và văn bản **không** được gửi.',
+              ),
+              _privacyBullet(
+                'Bạn có toàn quyền xóa mọi dữ liệu bất kỳ lúc nào qua tính năng "Dọn dẹp" hoặc xóa tài liệu.',
+              ),
+              _privacyBullet(
+                'Không theo dõi  , không phân tích hành vi người dùng.',
+              ),
             ],
           ),
         ),
@@ -266,7 +294,9 @@ class _DefaultVoiceTile extends ConsumerWidget {
         final activeModel = snapshot.data;
         return ListTile(
           title: const Text('Giọng đọc mặc định'),
-          subtitle: Text(activeModel?.label ?? 'Chưa chọn (sẽ dùng giọng đầu tiên có sẵn)'),
+          subtitle: Text(
+            activeModel?.label ?? 'Chưa chọn (sẽ dùng giọng đầu tiên có sẵn)',
+          ),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => context.push(RoutePaths.models),
         );
@@ -299,22 +329,24 @@ class _DefaultSpeedTile extends ConsumerWidget {
     showModalBottomSheet(
       context: context,
       builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const ListTile(title: Text('Chọn tốc độ mặc định')),
-            ...SettingsScreen.speedOptions.map((opt) => RadioListTile<double>(
-                  value: opt.$1,
-                  groupValue: current,
-                  title: Text(opt.$2),
-                  onChanged: (value) async {
-                    if (value != null) {
-                      await ref.read(documentRepositoryProvider).setSetting('default_speed', value.toString());
-                      if (context.mounted) Navigator.pop(context);
-                    }
-                  },
-                )),
-          ],
+        child: RadioGroup<double>(
+          groupValue: current,
+          onChanged: (value) async {
+            await ref
+                .read(documentRepositoryProvider)
+                .setSetting('default_speed', value.toString());
+            if (context.mounted) Navigator.pop(context);
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ListTile(title: Text('Chọn tốc độ mặc định')),
+              ...SettingsScreen.speedOptions.map(
+                (opt) =>
+                    RadioListTile<double>(value: opt.$1, title: Text(opt.$2)),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -345,23 +377,22 @@ class _DefaultVolumeTile extends ConsumerWidget {
     showModalBottomSheet(
       context: context,
       builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const ListTile(title: Text('Chọn âm lượng mặc định')),
-            for (int i = 0; i <= 10; i++)
-              RadioListTile<double>(
-                value: i / 10,
-                groupValue: current,
-                title: Text('${i * 10}%'),
-                onChanged: (value) async {
-                  if (value != null) {
-                    await ref.read(documentRepositoryProvider).setSetting('default_volume', value.toString());
-                    if (context.mounted) Navigator.pop(context);
-                  }
-                },
-              ),
-          ],
+        child: RadioGroup<double>(
+          groupValue: current,
+          onChanged: (value) async {
+            await ref
+                .read(documentRepositoryProvider)
+                .setSetting('default_volume', value.toString());
+            if (context.mounted) Navigator.pop(context);
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ListTile(title: Text('Chọn âm lượng mặc định')),
+              for (int i = 0; i <= 10; i++)
+                RadioListTile<double>(value: i / 10, title: Text('${i * 10}%')),
+            ],
+          ),
         ),
       ),
     );
@@ -377,10 +408,16 @@ class _DefaultFormatTile extends ConsumerWidget {
     return FutureBuilder<String?>(
       future: repo.getSetting('default_format'),
       builder: (context, snapshot) {
-        final format = SpeechFormat.values.byName(snapshot.data ?? 'wav');
+        // `asNameMap` + fallback rather than `byName`: an unknown stored value
+        // must not throw and blank the whole Settings screen.
+        final format =
+            SpeechFormat.values.asNameMap()[snapshot.data ?? 'wav'] ??
+            SpeechFormat.wav;
         return ListTile(
           title: const Text('Định dạng âm thanh'),
-          subtitle: Text(format == SpeechFormat.wav ? 'WAV (chất lượng cao)' : 'MP3 (nén)'),
+          subtitle: Text(
+            format == SpeechFormat.wav ? 'WAV (chất lượng cao)' : 'MP3 (nén)',
+          ),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _showFormatPicker(context, ref, format),
         );
@@ -388,26 +425,34 @@ class _DefaultFormatTile extends ConsumerWidget {
     );
   }
 
-  void _showFormatPicker(BuildContext context, WidgetRef ref, SpeechFormat current) {
+  void _showFormatPicker(
+    BuildContext context,
+    WidgetRef ref,
+    SpeechFormat current,
+  ) {
     showModalBottomSheet(
       context: context,
       builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const ListTile(title: Text('Chọn định dạng âm thanh')),
-            ...SettingsScreen.formatOptions.map((opt) => RadioListTile<SpeechFormat>(
+        child: RadioGroup<SpeechFormat>(
+          groupValue: current,
+          onChanged: (value) async {
+            await ref
+                .read(documentRepositoryProvider)
+                .setSetting('default_format', value!.name);
+            if (context.mounted) Navigator.pop(context);
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ListTile(title: Text('Chọn định dạng âm thanh')),
+              ...SettingsScreen.formatOptions.map(
+                (opt) => RadioListTile<SpeechFormat>(
                   value: opt.$1,
-                  groupValue: current,
                   title: Text(opt.$2),
-                  onChanged: (value) async {
-                    if (value != null) {
-                      await ref.read(documentRepositoryProvider).setSetting('default_format', value.name);
-                      if (context.mounted) Navigator.pop(context);
-                    }
-                  },
-                )),
-          ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -415,27 +460,25 @@ class _DefaultFormatTile extends ConsumerWidget {
 }
 
 /// Low-memory mode toggle tile.
+///
+/// Writes through [lowMemoryModeProvider] rather than the repository directly, so
+/// the value the tile shows and the value the capture and import paths read are
+/// one value. The old version saved the row and left the running app unchanged,
+/// which is why the switch did nothing until the next launch — and even then,
+/// nothing read it.
 class _LowMemoryModeTile extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final repo = ref.watch(documentRepositoryProvider);
+    final enabled = ref.watch(lowMemoryModeProvider);
 
-    return FutureBuilder<String?>(
-      future: repo.getSetting('low_memory_mode'),
-      builder: (context, snapshot) {
-        final enabled = snapshot.data == 'true';
-        return SwitchListTile(
-          title: const Text('Chế độ tiết kiệm bộ nhớ'),
-          subtitle: const Text(
-            'Giảm bộ nhớ đệm, xử lý từng trang, không giữ toàn bộ tài liệu trong RAM. '
-            'Phù hợp cho thiết bị cấu hình thấp.',
-          ),
-          value: enabled,
-          onChanged: (value) async {
-            await ref.read(documentRepositoryProvider).setSetting('low_memory_mode', value.toString());
-          },
-        );
-      },
+    return SwitchListTile(
+      title: const Text('Chế độ tiết kiệm bộ nhớ'),
+      subtitle: const Text(
+        'Giảm bộ nhớ đệm, xử lý từng trang, không giữ toàn bộ tài liệu trong RAM. '
+        'Phù hợp cho thiết bị cấu hình thấp.',
+      ),
+      value: enabled,
+      onChanged: (value) => ref.read(lowMemoryModeProvider.notifier).set(value),
     );
   }
 }
@@ -459,10 +502,16 @@ class _StorageUsageTile extends ConsumerWidget {
         title: Text('Dung lượng đã dùng'),
         subtitle: Text('Đang tính...'),
       ),
-      error: (_, __) => ListTile(
-        leading: Icon(Icons.storage_outlined, color: Theme.of(context).colorScheme.error),
+      error: (_, _) => ListTile(
+        leading: Icon(
+          Icons.storage_outlined,
+          color: Theme.of(context).colorScheme.error,
+        ),
         title: const Text('Dung lượng đã dùng'),
-        subtitle: Text('Lỗi', style: TextStyle(color: Theme.of(context).colorScheme.error)),
+        subtitle: Text(
+          'Lỗi',
+          style: TextStyle(color: Theme.of(context).colorScheme.error),
+        ),
       ),
     );
   }
@@ -531,7 +580,9 @@ class _StorageRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final style = isTotal ? Theme.of(context).textTheme.titleMedium : Theme.of(context).textTheme.bodyMedium;
+    final style = isTotal
+        ? Theme.of(context).textTheme.titleMedium
+        : Theme.of(context).textTheme.bodyMedium;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
@@ -540,7 +591,9 @@ class _StorageRow extends StatelessWidget {
           Text(label, style: style),
           Text(
             _formatBytes(bytes),
-            style: style?.copyWith(fontWeight: isTotal ? FontWeight.bold : FontWeight.normal),
+            style: style?.copyWith(
+              fontWeight: isTotal ? FontWeight.bold : FontWeight.normal,
+            ),
           ),
         ],
       ),

@@ -103,9 +103,15 @@ class ModelInstallState {
 /// the invariant that matters — an install is reported as complete only after
 /// every file's SHA-256 matched, and a failure leaves nothing behind that could
 /// be mistaken for an install.
+///
+/// [modelDirectoryName] lets the service manage any variant without branching:
+/// the int8 and fp16 checkpoints share the same codec and phonemizer directories,
+/// so only the model weights directory differs.
 class ModelInstallService {
   ModelInstallService({
     required this.root,
+    required this.modelId,
+    required this.modelDirectoryName,
     required this.files,
     ModelDownloadService? downloads,
     String? platform,
@@ -115,10 +121,16 @@ class ModelInstallService {
   /// `<app documents>/models`.
   final Directory root;
 
+  /// The checkpoint this service manages, e.g. `vieneu-v3-turbo-int8`.
+  final String modelId;
+
+  /// The sub-directory under [root] that holds this variant's weights.
+  final String modelDirectoryName;
+
   /// Exactly what to install, in order. Passed in rather than read from the
   /// manifest inside the class, so the orchestrator is testable against a
-  /// handful of byte-sized files instead of 280 MB of weights — and so a future
-  /// second checkpoint is a different list, not a branch in here.
+  /// handful of byte-sized files instead of 280 MB of weights — and so a second
+  /// checkpoint is a different list, not a branch in here.
   final List<ModelFileSpec> files;
 
   final String platform;
@@ -129,8 +141,7 @@ class ModelInstallService {
   int get totalBytes =>
       files.fold<int>(0, (sum, file) => sum + file.sizeBytes);
 
-  String get modelPath =>
-      '${root.path}/${VieNeuModelManifest.modelDirectoryName}';
+  String get modelPath => '${root.path}/$modelDirectoryName';
 
   String get codecPath => '${root.path}/${VieNeuModelManifest.codecDirectoryName}';
 
@@ -315,6 +326,7 @@ class ModelInstallService {
     }
 
     AppLog.info('model.installed', data: <String, Object?>{
+      'modelId': modelId,
       'bytes': total,
       'files': files.length,
       'platform': platform,

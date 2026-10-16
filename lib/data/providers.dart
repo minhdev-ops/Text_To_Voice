@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
@@ -87,6 +86,9 @@ final defaultTtsOptionsProvider = FutureProvider<TtsOptions>((ref) async {
     voiceId: voiceId,
     speed: double.tryParse(speedStr ?? '1.0') ?? 1.0,
     volume: double.tryParse(volumeStr ?? '1.0') ?? 1.0,
-    format: SpeechFormat.values.byName(formatStr ?? 'wav'),
+    // `asNameMap` + fallback rather than `byName`: a stored value this build
+    // does not know must not throw out of the provider's build.
+    format: SpeechFormat.values.asNameMap()[formatStr ?? 'wav'] ??
+        SpeechFormat.wav,
   );
 });

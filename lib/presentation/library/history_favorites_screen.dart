@@ -1,13 +1,14 @@
+import 'dart:async' show unawaited;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../core/router/app_router.dart' show RoutePaths;
+import '../../core/router/app_router.dart' show RoutePaths, readAloudLocation;
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/semantic_colors.dart';
-import '../../core/theme/tokens.dart';
 import '../../data/providers.dart';
-import '../../domain/models/document.dart' show DocumentSource, DocumentStatus, DocumentSortBy, Document;
+import '../../domain/models/document.dart' show DocumentSource, DocumentSortBy, Document;
 import '../common/brief_error_label.dart';
 import '../common/empty_state.dart';
 
@@ -81,13 +82,17 @@ class ReadingHistoryScreen extends ConsumerWidget {
 }
 
 /// Row for history screen.
-class _HistoryRow extends StatelessWidget {
+///
+/// Tapping opens the document **where the reader left it**: this list exists to
+/// continue reading, and a row that does nothing (or silently restarts a
+/// 200-sentence document) is the complaint this screen was generating.
+class _HistoryRow extends ConsumerWidget {
   const _HistoryRow({required this.document});
 
   final Document document;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final semantic = theme.semanticColors;
 
@@ -102,11 +107,13 @@ class _HistoryRow extends StatelessWidget {
         _formatDateTime(document.lastOpenedAt!),
         style: theme.utility.copyWith(color: semantic.textSubtle),
       ),
-      onTap: () {
-        // Navigate to read aloud with this document
-        // The router will handle the documentId parameter
-      },
+      onTap: () => _open(context, ref),
     );
+  }
+
+  void _open(BuildContext context, WidgetRef ref) {
+    unawaited(ref.read(documentRepositoryProvider).markOpened(document.id));
+    context.go(readAloudLocation(documentId: document.id, resume: true));
   }
 
   String _subtitle(Document document) {
@@ -270,13 +277,17 @@ class FavoritesScreen extends ConsumerWidget {
 }
 
 /// Row for favorites screen.
-class _FavoriteRow extends StatelessWidget {
+///
+/// Same rule as history: opening a favourite continues the reading rather than
+/// restarting it, and the reader's own `Đọc từ đầu` strip stays the way to
+/// begin again.
+class _FavoriteRow extends ConsumerWidget {
   const _FavoriteRow({required this.document});
 
   final Document document;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final semantic = theme.semanticColors;
 
@@ -289,7 +300,10 @@ class _FavoriteRow extends StatelessWidget {
       ),
       trailing: Icon(Icons.star, size: 20, color: semantic.warning),
       onTap: () {
-        // Navigate to read aloud
+        unawaited(ref.read(documentRepositoryProvider).markOpened(document.id));
+        context.go(
+          readAloudLocation(documentId: document.id, resume: true),
+        );
       },
     );
   }

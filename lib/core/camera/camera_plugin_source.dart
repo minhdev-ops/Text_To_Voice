@@ -35,7 +35,6 @@ class CameraPluginSource implements CameraSource {
       const <TargetPlatform>{
         TargetPlatform.android,
         TargetPlatform.iOS,
-        TargetPlatform.macOS,
       }.contains(defaultTargetPlatform);
 
   @override

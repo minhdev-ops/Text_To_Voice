@@ -9,8 +9,8 @@ import '../../domain/models/document.dart';
 import '../../domain/models/document_block.dart';
 import '../../domain/models/document_image.dart';
 import '../../domain/models/reading.dart';
+import '../../domain/models/search.dart' show SearchHit, SearchResults;
 import '../../domain/models/tts.dart';
-import '../../domain/speech/synthesis_cache.dart';
 import '../database/app_database.dart' hide Document, DocumentBlock, DocumentImage;
 import '../database/app_database.dart' as sql show Document, DocumentBlock, DocumentImage;
 import '../database/database_daos.dart';
@@ -69,9 +69,25 @@ class DocumentRepository {
         metadata: Value(jsonEncode(metadata)),
       ));
 
-      // Insert blocks
+      // Pages, then blocks.
+      //
+      // **Order matters**: a block's `page_id` is a foreign key into
+      // `document_pages`, and SRS FR-17 §20 reports "Page 5" by joining the two.
+      // `document_pages` was defined and never written, so every block had a null
+      // page and every search result would have had to omit the one piece of
+      // information that makes a result findable. The page numbers already exist
+      // on the blocks — the OCR structurer puts them there — so persisting them
+      // is deriving a fact, not inventing one.
+      final pages = _pagesForBlocks(id, source, blocks);
+      if (pages.isNotEmpty) {
+        await _daos.insertPages(pages);
+      }
+
       if (blocks.isNotEmpty) {
-        final blockCompanions = blocks.map((b) => _blockToCompanion(b, id, now)).toList();
+        final blockCompanions = <DocumentBlocksCompanion>[
+          for (final block in blocks)
+            _blockToCompanion(block, id, now, pageId: _pageUuidForBlock(id, block)),
+        ];
         await _daos.insertBlocks(blockCompanions);
       }
 
@@ -174,6 +190,174 @@ class DocumentRepository {
       sortBy: sortBy,
       ascending: ascending,
     ).map((list) => list.map(_mapDocument).toList());
+  }
+
+  // ============ Search (SRS FR-17 §20) ============
+
+  /// Finds [query] across document bodies and titles, as locations.
+  ///
+  /// SRS FR-17 wants `Document · Page · excerpt`, which is a different question
+  /// from the library filter's "which documents match" — so this does not reuse
+  /// [getDocuments]. A document matched on four pages is four results, because
+  /// the reader wants to know which four.
+  ///
+  /// [maxHits] bounds the work, because this walks `document_blocks` and an
+  /// unbounded scan of a large library on every keystroke is exactly the
+  /// behaviour that makes a search box feel broken.
+  Future<SearchResults> search(String query, {int maxHits = 200}) async {
+    final term = query.trim();
+    if (term.isEmpty) {
+      return SearchResults(hits: const <SearchHit>[], query: term);
+    }
+
+    // The SQL pattern is a **permissive prefilter**, not the answer: `%` and `_`
+    // are LIKE wildcards and drift emits no `ESCAPE` clause, so backslash-escaping
+    // them here would produce a literal backslash and match nothing. Left
+    // unescaped, `100%` reads as "100 then anything", which is a *superset* of
+    // "contains 100%". Every candidate is therefore re-checked exactly in Dart
+    // below, which is what makes a `%` in a Vietnamese price or a percentage
+    // searchable instead of catastrophic.
+    final pattern = '%$term%';
+
+    var rows = await _daos.searchBlocks(
+      pattern: pattern,
+      limit: maxHits,
+    );
+    var titles = await _daos.searchByName(
+      pattern: pattern,
+      limit: maxHits,
+    );
+
+    // SQLite case-folds ASCII only, so `%giáo%` never sees a heading stored as
+    // `GIÁO TRÌNH` and a whole library can come back empty even though every
+    // document really contains the term. When the fast path finds nothing,
+    // scan a bounded window and let Dart — which case-folds the whole string —
+    // answer instead.
+    if (rows.isEmpty) {
+      rows = await _daos.scanBlocks(limit: _caseFallbackScanLimit);
+    }
+    if (titles.isEmpty) {
+      titles = await _daos.scanDocumentNames();
+    }
+
+    final bodyHits = <SearchHit>[
+      for (final row in rows)
+        if (_indexOfInsensitive(row.content, term) case final int at when at >= 0)
+          _hitFromRow(row, term, at),
+    ];
+
+    // A document whose *name* matched is a result even when no block did — the
+    // title is part of the text a user searches, and SRS shows the name on every
+    // result line anyway. Only added when it is not already covered by a body
+    // hit, so one document is not listed twice for one query. The set is built
+    // from the hits that **survived** the exact re-check: using the raw SQL
+    // rows would let a wildcard false positive (`100` matching `100%`'s LIKE)
+    // suppress the title hit and lose the document from the results entirely.
+    final bodyIds = bodyHits.map((hit) => hit.documentId).toSet();
+    final titleHits = <SearchHit>[
+      for (final document in titles)
+        if (!bodyIds.contains(document.uuid))
+          if (_indexOfInsensitive(document.name, term) >= 0)
+            _titleHit(document.uuid, document.name, term),
+    ];
+
+    return SearchResults(
+      query: term,
+      hits: <SearchHit>[...bodyHits, ...titleHits],
+    );
+  }
+
+  /// How many blocks the case-folding fallback scans when SQL found nothing —
+  /// large enough to cover a phone-sized library, small enough that one
+  /// keystroke never walks an unbounded table.
+  static const int _caseFallbackScanLimit = 2000;
+
+  /// A title match, with the matched run split out exactly like a body match.
+  SearchHit _titleHit(String documentId, String name, String term) {
+    final at = _indexOfInsensitive(name, term);
+    if (at < 0) {
+      // Cannot happen for the caller's check, but a title is not worth a crash:
+      // `at` indexes the *lower-cased* name, and a few characters change length
+      // when case-folded, so the match is re-proved before it is sliced.
+      return SearchHit(
+        documentId: documentId,
+        documentName: name,
+        excerptBefore: '',
+        match: '',
+        excerptAfter: name,
+        matchedInTitle: true,
+      );
+    }
+    final end = at + term.length > name.length ? name.length : at + term.length;
+    return SearchHit(
+      documentId: documentId,
+      documentName: name,
+      excerptBefore: at > 0 ? name.substring(0, at) : '',
+      match: name.substring(at, end),
+      excerptAfter: end < name.length ? name.substring(end) : '',
+      matchedInTitle: true,
+    );
+  }
+
+  /// Builds a hit with the matched run kept separate from its surroundings, so
+  /// the UI can underline exactly the term without re-finding it in the excerpt.
+  ///
+  /// The window is asymmetric on purpose: more text after the match than before,
+  /// because in Vietnamese prose the words that identify a passage usually follow
+  /// the term the reader searched for.
+  SearchHit _hitFromRow(BlockSearchRow row, String term, int at) {
+    final content = row.content;
+    final before = at > _excerptBeforeChars ? at - _excerptBeforeChars : 0;
+    // Clamped: `at` comes from the lower-cased content, and case folding is not
+    // guaranteed to preserve length. A match must never slice past the string.
+    final after = (at + term.length).clamp(0, content.length);
+    final afterEnd =
+        after + _excerptAfterChars > content.length
+            ? content.length
+            : after + _excerptAfterChars;
+    return SearchHit(
+      documentId: row.documentId,
+      documentName: row.documentName,
+      pageNumber: row.pageNumber,
+      blockOrder: row.blockOrder,
+      excerptBefore: _clip(content, before, at),
+      match: content.substring(at, after),
+      excerptAfter: _clip(content, after, afterEnd),
+    );
+  }
+
+  /// Characters of context kept before the match.
+  static const int _excerptBeforeChars = 48;
+
+  /// Characters of context kept after the match.
+  static const int _excerptAfterChars = 96;
+
+  static String _clip(String source, int from, int to) {
+    if (from >= to || from >= source.length) return '';
+    final end = to > source.length ? source.length : to;
+    var start = from;
+    // Never cut a Vietnamese word in half: a snippet starting mid-syllable is
+    // unreadable, and the base letters of a split diacritic are worse.
+    while (start < end && _isContinuation(source.codeUnitAt(start))) {
+      start++;
+    }
+    return source.substring(start, end);
+  }
+
+  /// A combining mark or a tone-modifier letter that must not begin a snippet.
+  static bool _isContinuation(int unit) {
+    // Vietnamese tone marks and vowel modifiers sit in the combining ranges, and
+    // the precomposed forms are letters in U+1EA0–U+1EF9. Splitting between a
+    // base letter and its mark is the specific failure worth preventing.
+    return (unit >= 0x0300 && unit <= 0x036F) ||
+        (unit >= 0x1AB0 && unit <= 0x1AFF) ||
+        (unit >= 0x20D0 && unit <= 0x20FF) ||
+        (unit >= 0xFE20 && unit <= 0xFE2F);
+  }
+
+  static int _indexOfInsensitive(String haystack, String needle) {
+    if (needle.isEmpty) return -1;
+    return haystack.toLowerCase().indexOf(needle.toLowerCase());
   }
 
   /// Deletes a document and all its related data.
@@ -497,37 +681,24 @@ class DocumentRepository {
 
   // ============ Helpers ============
 
-  DocumentsCompanion _documentToCompanion(Document doc) {
-    return DocumentsCompanion(
-      uuid: Value(doc.id),
-      name: Value(doc.name),
-      source: Value(doc.source.name),
-      mimeType: Value(doc.mimeType),
-      originalFileName: doc.originalFileName != null ? Value(doc.originalFileName!) : const Value.absent(),
-      fileSize: Value(doc.fileSize),
-      filePath: doc.filePath != null ? Value(doc.filePath!) : const Value.absent(),
-      status: Value(doc.status.name),
-      extractedText: doc.extractedText != null ? Value(doc.extractedText!) : const Value.absent(),
-      isFavorite: Value(doc.isFavorite),
-      category: doc.category != null ? Value(doc.category!) : const Value.absent(),
-      createdAt: Value(doc.createdAt),
-      updatedAt: Value(doc.updatedAt),
-      lastOpenedAt: doc.lastOpenedAt != null ? Value(doc.lastOpenedAt!) : const Value.absent(),
-      failureMessage: doc.failureMessage != null ? Value(doc.failureMessage!) : const Value.absent(),
-      metadata: Value(jsonEncode(doc.metadata)),
-    );
-  }
-
   Document _mapDocument(sql.Document doc) {
     return Document(
       id: doc.uuid,
       name: doc.name,
-      source: DocumentSource.values.firstWhere((s) => s.name == doc.source),
+      source: _enumByName(
+        DocumentSource.values,
+        doc.source,
+        DocumentSource.typedText,
+      ),
       mimeType: doc.mimeType,
       originalFileName: doc.originalFileName,
       fileSize: doc.fileSize,
       filePath: doc.filePath,
-      status: DocumentStatus.values.firstWhere((s) => s.name == doc.status),
+      status: _enumByName(
+        DocumentStatus.values,
+        doc.status,
+        DocumentStatus.ready,
+      ),
       extractedText: doc.extractedText,
       isFavorite: doc.isFavorite,
       category: doc.category,
@@ -535,15 +706,69 @@ class DocumentRepository {
       updatedAt: doc.updatedAt,
       lastOpenedAt: doc.lastOpenedAt,
       failureMessage: doc.failureMessage,
-      metadata: jsonDecode(doc.metadata) as Map<String, Object?>,
+      metadata: _decodeMetadata(doc.metadata),
     );
   }
 
-  DocumentBlocksCompanion _blockToCompanion(DocumentBlock block, String documentId, DateTime now) {
+  /// Reads a stored enum name, tolerating one this build does not know.
+  ///
+  /// `values.firstWhere(...)` without an `orElse` throws `StateError` on an
+  /// unrecognised name, and a single unreadable row would then make the *whole*
+  /// library (or the whole reader) throw with no way out for the user — not even
+  /// a delete button, because the list never loads. A name from a newer build, a
+  /// downgrade, or a half-written row degrades one field instead of the screen.
+  static T _enumByName<T extends Enum>(List<T> values, String? name, T fallback) {
+    if (name == null) return fallback;
+    for (final value in values) {
+      if (value.name == name) return value;
+    }
+    return fallback;
+  }
+
+  /// Decodes a metadata/payload JSON column.
+  ///
+  /// A column that is not a JSON object (truncated by a full disk, written by
+  /// another build) yields an empty map rather than throwing out of every read
+  /// that touches the row.
+  static Map<String, Object?> _decodeMetadata(String? raw) {
+    if (raw == null || raw.isEmpty) return const <String, Object?>{};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) return Map<String, Object?>.from(decoded);
+    } catch (_) {
+      // Deliberately swallowed: metadata is context, never the document.
+    }
+    return const <String, Object?>{};
+  }
+
+  /// The page number a block's `page_id` names (`<documentId>-p3` → `3`).
+  ///
+  /// Parsed from the trailing `-p` marker, **not** by stripping every non-digit
+  /// from the id. A document id is derived from a timestamp (`doc-1759…`), so
+  /// stripping digits returned the timestamp followed by the page number — a
+  /// number that matches no page. Every image placement compares against this
+  /// value, so the wrong number sent every scanned page's picture to the end of
+  /// the reader instead of into the flow where it was read.
+  static int? _pageNumberFromId(String? pageId) {
+    if (pageId == null) return null;
+    final marker = pageId.lastIndexOf('-p');
+    if (marker < 0) return null;
+    return int.tryParse(pageId.substring(marker + 2));
+  }
+
+  DocumentBlocksCompanion _blockToCompanion(
+    DocumentBlock block,
+    String documentId,
+    DateTime now, {
+    String? pageId,
+  }) {
+    // An explicit page wins over the caller's own value: `createDocument` derives
+    // it from the block's page number so the two can never disagree.
+    final resolvedPageId = pageId ?? block.pageId;
     return DocumentBlocksCompanion(
       uuid: Value(block.id),
       documentId: Value(documentId),
-      pageId: block.pageId != null ? Value(block.pageId!) : const Value.absent(),
+      pageId: resolvedPageId != null ? Value(resolvedPageId) : const Value.absent(),
       type: Value(block.type.name),
       level: Value(block.level),
       content: Value(block.content),
@@ -558,18 +783,72 @@ class DocumentRepository {
     );
   }
 
+  /// The `document_pages` rows implied by the blocks' page numbers.
+  ///
+  /// Distinct and ordered, because a 40-block page contributes one row, not
+  /// forty. A document with no page numbers (typed text, plain `txt`) produces
+  /// none — and then it honestly has no pages, rather than one invented page 1.
+  List<DocumentPagesCompanion> _pagesForBlocks(
+    String documentId,
+    DocumentSource source,
+    List<DocumentBlock> blocks,
+  ) {
+    final pageNumbers = <int>{
+      for (final block in blocks)
+        if (block.position?.pageNumber != null) block.position!.pageNumber!,
+    }.toList()
+      ..sort();
+
+    final now = DateTime.now();
+    return <DocumentPagesCompanion>[
+      for (final pageNumber in pageNumbers)
+        DocumentPagesCompanion.insert(
+          uuid: _pageUuid(documentId, pageNumber),
+          documentId: documentId,
+          pageNumber: pageNumber,
+          sourceType: _pageSourceType(source),
+          createdAt: Value(now),
+        ),
+    ];
+  }
+
+  /// The page uuid a block with [pageNumber] belongs to.
+  ///
+  /// Derived, not stored, on both sides: `createDocument` writes the row and
+  /// `search` joins back to it, so the two agree by construction.
+  static String _pageUuid(String documentId, int pageNumber) =>
+      '$documentId-p$pageNumber';
+
+  String? _pageUuidForBlock(String documentId, DocumentBlock block) {
+    final pageNumber = block.position?.pageNumber;
+    if (pageNumber == null) return null;
+    return _pageUuid(documentId, pageNumber);
+  }
+
+  /// What kind of page this is, in the vocabulary SRS §30 uses.
+  static String _pageSourceType(DocumentSource source) => switch (source) {
+        DocumentSource.camera => 'camera',
+        DocumentSource.image => 'imported',
+        DocumentSource.pdf => 'pdf',
+        DocumentSource.epub => 'epub',
+        DocumentSource.typedText ||
+        DocumentSource.textFile ||
+        DocumentSource.markdown =>
+          'text',
+      };
+
   DocumentBlock _mapBlock(sql.DocumentBlock block) {
     return DocumentBlock(
       id: block.uuid,
       documentId: block.documentId,
       pageId: block.pageId,
-      type: BlockType.values.firstWhere((t) => t.name == block.type),
+      type: _enumByName(BlockType.values, block.type, BlockType.unknown),
       level: block.level,
       content: block.content,
       order: block.order,
       position: (block.left != null && block.top != null && block.width != null && block.height != null)
           ? BlockPosition(
-              pageNumber: block.pageId != null ? int.tryParse(block.pageId!.replaceAll(RegExp(r'[^0-9]'), '')) : null,
+              pageNumber: _pageNumberFromId(block.pageId),
               left: block.left,
               top: block.top,
               width: block.width,
@@ -578,7 +857,7 @@ class DocumentRepository {
           : null,
       confidence: block.confidence,
       createdAt: block.createdAt,
-      metadata: jsonDecode(block.metadata) as Map<String, Object?>,
+      metadata: _decodeMetadata(block.metadata),
     );
   }
 
@@ -604,7 +883,11 @@ class DocumentRepository {
       documentId: image.documentId,
       pageId: image.pageId,
       pageNumber: image.pageNumber,
-      sourceType: ImageSourceType.values.firstWhere((s) => s.name == image.sourceType),
+      sourceType: _enumByName(
+        ImageSourceType.values,
+        image.sourceType,
+        ImageSourceType.imported,
+      ),
       filePath: image.filePath,
       format: image.format,
       width: image.width,
@@ -634,7 +917,7 @@ class DocumentRepository {
       status: job.status,
       progress: job.progress,
       errorMessage: job.errorMessage,
-      payload: jsonDecode(job.payload) as Map<String, Object?>,
+      payload: _decodeMetadata(job.payload),
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
     );

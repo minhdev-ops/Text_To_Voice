@@ -76,7 +76,8 @@ class _ExportSheetState extends State<ExportSheet> {
                 Text('Xuất tài liệu', style: theme.textTheme.titleMedium),
                 const SizedBox(height: Spacing.s2),
                 Text(
-                  'Tệp được lưu trong bộ nhớ riêng của ứng dụng.',
+                  'Tệp được lưu trong bộ nhớ riêng của ứng dụng, rồi bạn có thể '
+                  'chia sẻ sang ứng dụng khác.',
                   style: theme.utility,
                 ),
               ],

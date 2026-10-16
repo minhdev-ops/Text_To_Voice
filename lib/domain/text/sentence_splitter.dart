@@ -72,16 +72,27 @@ class SentenceSplitter {
   /// * line breaks *inside* a paragraph become single spaces — they are usually
   ///   PDF wrapping, not pauses;
   /// * output never contains an empty or whitespace-only entry.
-  List<String> split(String text) {
-    if (text.trim().isEmpty) return const <String>[];
+  List<String> split(String text) =>
+      <String>[for (final paragraph in splitByParagraph(text)) ...paragraph];
 
-    final sentences = <String>[];
+  /// Splits [text] into paragraphs, each split into its sentences.
+  ///
+  /// The paragraph structure is the reader's: it is what lets the reading
+  /// surface render one *flowing* document instead of a stack of sentence rows,
+  /// while every sentence inside a paragraph keeps its own tap target and
+  /// Spine. Paragraphs are split on blank lines — the same rule [split] uses,
+  /// so the two can never disagree about where a paragraph ends.
+  List<List<String>> splitByParagraph(String text) {
+    if (text.trim().isEmpty) return const <List<String>>[];
+
+    final paragraphs = <List<String>>[];
     for (final paragraph in text.split(RegExp(r'\n\s*\n+'))) {
       final trimmed = paragraph.trim();
       if (trimmed.isEmpty) continue;
-      sentences.addAll(_splitParagraph(trimmed));
+      final sentences = _splitParagraph(trimmed);
+      if (sentences.isNotEmpty) paragraphs.add(sentences);
     }
-    return sentences;
+    return paragraphs;
   }
 
   List<String> _splitParagraph(String paragraph) {
