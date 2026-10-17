@@ -60,7 +60,7 @@ dependencies:
   riverpod: any
 
 dependency_overrides:
-  pdfrx_engine: ^0.5.0
+  pdfrx_engine: 0.4.4
 
 dev_dependencies:
   flutter_test:
