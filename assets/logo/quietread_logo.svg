@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Màu nền: tinted paper khóa trong DESIGN.md -->
+  <rect width="1024" height="1024" fill="#F4F8F6" rx="180"/>
+  <!-- Màu accent: verdigris #1F7A6B -->
+  <path fill="#1F7A6B" d="M 512 180
+    C 300 180 140 340 140 552
+    C 140 764 300 924 512 924
+    C 724 924 884 764 884 552
+    C 884 340 724 180 512 180 Z
+    M 512 220
+    C 340 220 200 360 200 552
+    C 200 744 340 884 512 884
+    C 684 884 824 744 824 552
+    C 824 360 684 220 512 220 Z"/>
+  <!-- Dấu "Q" trong lòng sách -->
+  <path fill="#FFFFFF" d="M 430 430
+    C 390 430 360 460 360 500
+    C 360 540 390 570 430 570
+    C 470 570 500 540 500 500
+    C 500 460 470 430 430 430 Z
+    M 430 410
+    L 500 480"/>
+  <!-- Dấu pauses / quiet: hai thanh ngang -->
+  <rect x="360" y="660" width="140" height="28" fill="#5E6D6B" rx="14"/>
+  <rect x="360" y="710" width="90" height="28" fill="#5E6D6B" rx="14"/>
+</svg>

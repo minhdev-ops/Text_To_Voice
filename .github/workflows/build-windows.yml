@@ -1,0 +1,35 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - run: flutter pub get
+
+      - run: flutter build windows --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-app
+          path: build/windows/runner/Release/
+
+      - uses: jherr/inno-setup-action@v3
+        with:
+          version: 6.2.2
+          script: windows/installer.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: build/windows/installer/QuietRead-Setup.exe
