@@ -1,0 +1,15 @@
+--- a/lib/src/native/pdf_file_cache.dart
++++ b/lib/src/native/pdf_file_cache.dart
+@@ -375,10 +375,12 @@ class PdfFileCache {
+ 
+   Future<int> get length async {
+     final cache = _cache;
++    if (cache == null) return 0;
+     return cache.blockSize;
+   }
+ 
+   Future<Uint8List> read(int start, int length) async {
+     final cache = _cache;
++    if (cache == null) return Uint8List(0);
+     return cache.read(start, length);
+   }

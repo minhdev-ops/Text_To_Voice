@@ -62,6 +62,10 @@ dependencies:
 dependency_overrides:
   pdfrx_engine: 0.4.4
 
+patch:
+  pdfrx_engine:
+    - patches/pdfrx_engine_null_safety.patch
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
