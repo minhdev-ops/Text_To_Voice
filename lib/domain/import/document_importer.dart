@@ -12,7 +12,8 @@ import '../models/document.dart' show DocumentSource;
 import '../models/extraction.dart' show ExtractionResult;
 import '../models/imported_file.dart' show ImportedFile, SupportedFiles;
 import '../models/structured_block.dart' show StructuredBlock;
-import 'file_validation.dart' show ImportValidator, ValidatedFile, FileKind;
+import 'file_validation.dart'
+    show ImportValidator, ValidatedFile, FileKind, maxImportBytes;
 import 'import_service.dart' show ImportService;
 
 /// Result of a document import operation.
@@ -136,6 +137,17 @@ class DocumentImporter {
     ProgressCallback? onProgress,
   }) async {
     try {
+      // The size cap is checked **before** the bytes are buffered: reading a
+      // multi-hundred-MB file into memory and only then rejecting it with
+      // "Tệp lớn hơn 200 MB" is the out-of-memory kill the cap exists for.
+      final pickedLength = await platformFile.length();
+      if (pickedLength != null && pickedLength > maxImportBytes) {
+        return const Failure<ImportDocumentResult>(ValidationFailure(
+          message: 'Tệp lớn hơn ${maxImportBytes ~/ (1024 * 1024)} MB nên chưa '
+              'xử lý được.',
+        ));
+      }
+
       // Read file bytes
       final Uint8List fileBytes = await platformFile.readAsBytes();
       final headBytes = fileBytes.length > 512
@@ -144,7 +156,7 @@ class DocumentImporter {
 
       // Determine MIME type from extension
       final mimeType = _mimeTypeFromExtension(platformFile.extension);
-      final size = await platformFile.length() ?? fileBytes.length;
+      final size = pickedLength ?? fileBytes.length;
 
       // A provider may hand back a URI that is not a local path (a cloud
       // document, a web blob). The extractors read through

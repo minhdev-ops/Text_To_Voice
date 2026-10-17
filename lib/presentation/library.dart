@@ -1,4 +1,5 @@
 /// Library presentation exports.
+library;
 export 'library/library_screen.dart';
 export 'library/library_providers.dart';
 export 'library/resume_strip.dart';

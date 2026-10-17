@@ -1,9 +1,12 @@
+import 'dart:async' show Timer;
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod/legacy.dart' show StateProvider;
 
 import '../../data/providers.dart';
 import '../../domain/import/import_service.dart';
 import '../../domain/models/document.dart' show Document, DocumentStatus, DocumentSource, DocumentSortBy;
+import '../../domain/models/search.dart' show SearchResults;
 import '../../domain/ocr/ocr_structurer.dart';
 import '../capture/capture_providers.dart'
     show documentScannerProvider, ocrEngineProvider;
@@ -26,6 +29,58 @@ final importServiceProvider = Provider<ImportService>((ref) {
 
 /// Current search query for the library.
 final librarySearchQueryProvider = StateProvider<String>((ref) => '');
+
+/// The search term that will actually be **run**, debounced from the raw field.
+///
+/// **The debounce is load-bearing, not polish.** `onChanged` fires per keystroke
+/// and every firing ran a `LIKE '%term%'` scan across the whole `extracted_text`
+/// column of every document, followed by a rebuild. Typing one six-letter word
+/// meant six full scans — on a phone with a few hundred documents that is the
+/// difference between a search box that feels instant and one that feels broken.
+///
+/// Only the last call in a burst survives, and nothing is lost by waiting: the
+/// term is not interactive state and each result replaces the last. Submitting
+/// the keyboard's search action skips the wait via [LibrarySearchTerm.commit].
+class LibrarySearchTerm extends Notifier<String> {
+  Timer? _timer;
+
+  @override
+  String build() {
+    ref.onDispose(() => _timer?.cancel());
+    return '';
+  }
+
+  /// Called on every keystroke.
+  void update(String raw) {
+    _timer?.cancel();
+    _timer = Timer(_librarySearchDebounce, () => state = raw);
+  }
+
+  /// Applies the term now, with no wait. Used by the keyboard's search action
+  /// and by clearing the field — in both cases the user has said "now".
+  void commit(String raw) {
+    _timer?.cancel();
+    state = raw;
+  }
+}
+
+final librarySearchTermProvider =
+    NotifierProvider<LibrarySearchTerm, String>(LibrarySearchTerm.new);
+
+const Duration _librarySearchDebounce = Duration(milliseconds: 250);
+
+/// SRS FR-17 §20 results: a document, a page, and the line the term was on.
+class LibrarySearch extends AsyncNotifier<SearchResults> {
+  @override
+  Future<SearchResults> build() {
+    final repo = ref.watch(documentRepositoryProvider);
+    return repo.search(ref.watch(librarySearchTermProvider));
+  }
+}
+
+final librarySearchResultsProvider =
+    AsyncNotifierProvider<LibrarySearch, SearchResults>(LibrarySearch.new);
+
 
 /// Current filter status for the library.
 final libraryFilterStatusProvider = StateProvider<DocumentStatus?>((ref) => null);
@@ -52,8 +107,13 @@ final libraryPageProvider = StateProvider<int>((ref) => 0);
 const int libraryPageSize = 50;
 
 /// Filtered and sorted documents stream.
+///
+/// **No search term here on purpose.** A query is not a filter — SRS FR-17 §20
+/// wants *where the term was found* (document, page, excerpt), which
+/// [librarySearchResultsProvider] answers. Feeding the same term to this list as
+/// well produced two views of one search, the second of which could not say
+/// where anything was.
 final libraryDocumentsProvider = StreamProvider<List<Document>>((ref) {
-  final query = ref.watch(librarySearchQueryProvider);
   final status = ref.watch(libraryFilterStatusProvider);
   final source = ref.watch(libraryFilterSourceProvider);
   final isFavorite = ref.watch(libraryFilterFavoriteProvider);
@@ -63,7 +123,6 @@ final libraryDocumentsProvider = StreamProvider<List<Document>>((ref) {
 
   final repo = ref.watch(documentRepositoryProvider);
   return repo.watchDocuments(
-    query: query.isEmpty ? null : query,
     status: status,
     source: source,
     isFavorite: isFavorite,
@@ -75,7 +134,6 @@ final libraryDocumentsProvider = StreamProvider<List<Document>>((ref) {
 
 /// Document count for the current filter.
 final libraryDocumentCountProvider = FutureProvider<int>((ref) async {
-  final query = ref.watch(librarySearchQueryProvider);
   final status = ref.watch(libraryFilterStatusProvider);
   final source = ref.watch(libraryFilterSourceProvider);
   final isFavorite = ref.watch(libraryFilterFavoriteProvider);
@@ -84,7 +142,6 @@ final libraryDocumentCountProvider = FutureProvider<int>((ref) async {
   final repo = ref.watch(documentRepositoryProvider);
   // For count we don't need sorting
   final docs = await repo.getDocuments(
-    query: query.isEmpty ? null : query,
     status: status,
     source: source,
     isFavorite: isFavorite,

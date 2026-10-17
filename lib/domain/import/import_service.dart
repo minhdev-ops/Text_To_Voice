@@ -91,8 +91,12 @@ class ImportService {
         },
       );
       
-      // Step 4: Report completion
-      onProgress?.call(1, JobStage.done);
+      // Step 4: Report completion — for a real success only. Firing `done`
+      // unconditionally made every caller announce "nhập thành công" a moment
+      // before the failure message replaced it.
+      if (result.valueOrNull != null) {
+        onProgress?.call(1, JobStage.done);
+      }
       return result;
     } catch (error) {
       return Result<ExtractionResult>.failure(

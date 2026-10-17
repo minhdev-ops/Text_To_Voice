@@ -1,6 +1,27 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Downloads the TTS model and voice catalog on first run (FR-20).
+         WITHOUT THIS THE RELEASE BUILD CANNOT DOWNLOAD THE MODEL: Flutter
+         adds INTERNET to debug builds automatically but NOT to release
+         builds, so every model install would fail with the network error
+         only in the store build. HTTPS only; documents never leave the
+         device, so no cleartext exception is needed. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!-- Keeps speech generation alive after the user leaves the app.
+         FOREGROUND_SERVICE is required from API 28; the DATA_SYNC subtype is
+         required from API 34, where Android rejects a foreground service that
+         does not declare what kind of work it is. Generating audio files is
+         data sync, not media playback — nothing is being played to the user. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <!-- The progress notification is the only way the user can see or stop a
+         background run. Without it on API 33+ the service runs invisibly. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+
     <application
-        android:label="VietDoc AI"
+        android:label="QuietRead"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
@@ -62,6 +83,15 @@
                 <data android:mimeType="text/plain"/>
             </intent-filter>
         </activity>
+        <!-- Runs the synthesis worker while the app is backgrounded, so closing
+             the app does not abandon a document half-generated. See
+             SynthesisService.kt for why this is hand-written rather than a package
+             and what it does not survive. -->
+        <service
+            android:name=".SynthesisService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

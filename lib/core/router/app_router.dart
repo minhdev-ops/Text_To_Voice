@@ -42,6 +42,32 @@ abstract final class RoutePaths {
   ];
 }
 
+/// Builds a read-aloud location that is unique on every call.
+///
+/// GoRouter only notifies listeners when the URI actually changes, so a repeat
+/// tap of `Tiếp tục`, `Đọc từ đầu` or the same search hit — byte-identical
+/// parameters every time — would never reach the screen and the button would
+/// look dead. The `nonce` query parameter is that difference; the screen
+/// ignores re-deliveries of a location it has already acted on.
+String readAloudLocation({
+  required String documentId,
+  int? block,
+  bool resume = false,
+  bool fromStart = false,
+}) {
+  final params = <String, String>{
+    'documentId': documentId,
+    'nonce': '${DateTime.now().microsecondsSinceEpoch}',
+  };
+  if (block != null) params['block'] = '$block';
+  if (resume) params['resume'] = 'true';
+  if (fromStart) params['fromStart'] = 'true';
+  final query = params.entries
+      .map((entry) => '${entry.key}=${entry.value}')
+      .join('&');
+  return '${RoutePaths.readAloud}?$query';
+}
+
 /// Builds the app's declarative router.
 ///
 /// A factory, not a global, so every test gets a fresh router — a shared

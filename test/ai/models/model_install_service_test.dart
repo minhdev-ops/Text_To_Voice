@@ -5,6 +5,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:text_to_voice/ai/models/model_variant.dart';
 import 'package:text_to_voice/ai/models/model_download_service.dart';
 import 'package:text_to_voice/ai/models/model_install_service.dart';
 import 'package:text_to_voice/ai/models/vieneu_model_manifest.dart';
@@ -129,6 +130,8 @@ void main() {
   group('install state machine', () {
     ModelInstallService serviceFor(List<ModelFileSpec> files) => ModelInstallService(
           root: root,
+          modelId: 'vieneu-v3-turbo-int8',
+          modelDirectoryName: VieNeuModelManifest.modelDirectoryName,
           files: files,
           platform: 'linux',
           downloads: ModelDownloadService(
@@ -213,6 +216,8 @@ void main() {
       });
       final service = ModelInstallService(
         root: root,
+        modelId: 'vieneu-v3-turbo-int8',
+        modelDirectoryName: VieNeuModelManifest.modelDirectoryName,
         files: files,
         platform: 'linux',
         downloads: ModelDownloadService(client: client),
@@ -263,6 +268,48 @@ void main() {
       expect(state.stage, ModelInstallStage.notInstalled);
       expect(File('${root.path}/${service.files.first.relativePath}').existsSync(), isFalse);
       expect(Directory('${root.path}/vieneu-v3-turbo-int8').existsSync(), isFalse);
+    });
+  });
+
+  group('per-variant install', () {
+    test('modelId and modelDirectoryName are tracked on install state', () async {
+      final bytes = utf8.encode('weights');
+      final files = <ModelFileSpec>[
+        spec(
+          'vieneu-v3-turbo-fp16/part.bin',
+          bytes,
+          sha: sha256.convert(bytes).toString(),
+        ),
+      ];
+      final client = MockClient((request) async {
+        final body = files.firstWhere(
+          (f) => f.relativePath == request.url.path.replaceFirst('/', ''),
+          orElse: () => files.first,
+        );
+        return http.Response.bytes(body.url.isEmpty ? bytes : bytes, 200);
+      });
+      final service = ModelInstallService(
+        root: root,
+        modelId: ModelVariant.fp16.modelId,
+        modelDirectoryName: ModelVariant.fp16.modelDirectoryName,
+        files: files,
+        platform: 'linux',
+        downloads: ModelDownloadService(client: client),
+      );
+
+      final result = await service.install();
+      expect(result.stage, ModelInstallStage.installed);
+      expect(
+        result.modelPath,
+        '${root.path}/${ModelVariant.fp16.modelDirectoryName}',
+      );
+    });
+
+    test('int8 and fp16 use different model directories', () {
+      expect(
+        ModelVariant.int8.modelDirectoryName,
+        isNot(ModelVariant.fp16.modelDirectoryName),
+      );
     });
   });
 }

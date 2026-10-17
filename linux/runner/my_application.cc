@@ -1,12 +1,12 @@
 #include "my_application.h"
 
 #include <flutter_linux/flutter_linux.h>
+#include <gdk-pixbuf/gdk-pixbuf.h>
 #ifdef GDK_WINDOWING_X11
 #include <gdk/gdkx.h>
 #endif
 
 #include "flutter/generated_plugin_registrant.h"
-
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
@@ -24,6 +24,12 @@ static void my_application_activate(GApplication* application) {
   MyApplication* self = MY_APPLICATION(application);
   GtkWindow* window =
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
+
+  // Icon trên taskbar / thanh tiêu đề của Linux (GTK).
+  // Đặt file icon tại linux/runner/resources/quietread_icon.png (PNG,
+  // bất kỳ kích thước, GTK sẽ tự co dãn).
+  gtk_window_set_icon_from_file(
+      window, "linux/runner/resources/quietread_icon.png", nullptr);
 
   // Use a header bar when running in GNOME as this is the common style used
   // by applications and is the setup most users will be using (e.g. Ubuntu
@@ -45,11 +51,11 @@ static void my_application_activate(GApplication* application) {
   if (use_header_bar) {
     GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
     gtk_widget_show(GTK_WIDGET(header_bar));
-    gtk_header_bar_set_title(header_bar, "text_to_voice");
+    gtk_header_bar_set_title(header_bar, "QuietRead");
     gtk_header_bar_set_show_close_button(header_bar, TRUE);
     gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
   } else {
-    gtk_window_set_title(window, "text_to_voice");
+    gtk_window_set_title(window, "QuietRead");
   }
 
   gtk_window_set_default_size(window, 1280, 720);

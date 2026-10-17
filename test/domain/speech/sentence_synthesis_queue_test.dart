@@ -15,11 +15,18 @@ void main() {
 
   const text = 'Câu một. Câu hai. Câu ba. Câu bốn. Câu năm.';
 
-  SentenceSynthesisQueue buildQueue({int lookAhead = 2}) =>
+  /// `retryBaseDelay` collapses to zero: the backoff waits are real time, and
+  /// a test that proved a retry by sleeping fourteen seconds would be slower
+  /// than the thing it protects. The backoff arithmetic gets its own test below.
+  SentenceSynthesisQueue buildQueue({
+    int lookAhead = 2,
+    Duration retryBaseDelay = Duration.zero,
+  }) =>
       SentenceSynthesisQueue(
         engine: engine,
         cache: cache,
         lookAhead: lookAhead,
+        retryBaseDelay: retryBaseDelay,
       );
 
   setUp(() {
@@ -67,6 +74,40 @@ void main() {
       expect(replaced, hasLength(1));
       expect(queue.length, 1);
     });
+
+    test('paragraph boundaries survive into the sentence model', () async {
+      // Two sentences then one: `paragraph` is gapless and each sentence's
+      // index stays global across the whole document.
+      final sentences = await queue.load(
+        'Đoạn một, câu hai. Câu ba đây.\n\nĐoạn hai, câu bốn.',
+        options: const TtsOptions(),
+      );
+
+      expect(sentences, hasLength(3));
+      expect(sentences.map((s) => s.paragraph), <int>[0, 0, 1]);
+      expect(sentences.map((s) => s.index), <int>[0, 1, 2]);
+    });
+
+    test('the reader sees the raw sentence, the engine the spoken one',
+        () async {
+      final sentences = await queue.load(
+        'Năm 2026 có 50% tài liệu.\n\nCâu hai.',
+        options: const TtsOptions(),
+      );
+
+      // Spoken form: numbers expanded by the normalizer.
+      expect(
+        sentences.first.text,
+        'Năm hai nghìn không trăm hai mươi sáu có năm mươi phần trăm tài liệu.',
+      );
+      // Shown form: exactly what the user typed, before normalization.
+      expect(sentences.first.displayText, 'Năm 2026 có 50% tài liệu.');
+      expect(sentences.first.display, 'Năm 2026 có 50% tài liệu.');
+      // The second paragraph had nothing to expand, so raw and spoken agree —
+      // and the mapping is still carried, not dropped.
+      expect(sentences[1].displayText, 'Câu hai.');
+    });
+
   });
 
   group('FR-12 — audio starts before the document is synthesized', () {
@@ -187,6 +228,57 @@ void main() {
       final result = await queue.audioAt(0);
 
       expect(result.failureOrNull, isA<ModelUnavailableFailure>());
+      // Retrying a missing model would just delay the honest report: every
+      // sentence would fail identically, so the failure is reported on the
+      // first attempt.
+      expect(
+        engine.synthesizedTexts.where((t) => t == 'Câu một.').length,
+        1,
+      );
+    });
+
+    test('a transient failure is retried before it is reported', () async {
+      engine.failingTexts.add('Câu một.');
+      await queue.load(text, options: const TtsOptions());
+
+      final result = await queue.audioAt(0);
+
+      expect(result, isA<Failure<AudioResult>>());
+      // The first attempt plus every retry: one engine hiccup must not cost
+      // the reader a sentence, but a sentence that never synthesizes is
+      // reported after [SentenceSynthesisQueue.maxRetries] attempts, not
+      // silently spun on forever.
+      expect(
+        engine.synthesizedTexts.where((t) => t == 'Câu một.').length,
+        1 + queue.maxRetries,
+      );
+      expect(queue.sentences[0].status, SentenceStatus.failed);
+    });
+
+    test('a retry that succeeds on the second attempt is ready, not failed',
+        () async {
+      // A transient failure: the engine fails only while `failing` is set, and
+      // the test clears it from inside the retry window. The backoff must be
+      // real here — with a zero wait the retries would all run before the
+      // fault could be cleared.
+      final backoff = buildQueue(
+        lookAhead: 0,
+        retryBaseDelay: const Duration(milliseconds: 50),
+      );
+      addTearDown(backoff.dispose);
+      engine.failingTexts.add('Câu một.');
+      await backoff.load(text, options: const TtsOptions());
+
+      final pending = backoff.audioAt(0);
+      // Give the first attempt time to fail, then clear the fault so the first
+      // retry succeeds.
+      await Future<void>.delayed(Duration.zero);
+      engine.failingTexts.clear();
+
+      final result = await pending;
+
+      expect(result.isSuccess, isTrue);
+      expect(backoff.sentences[0].status, SentenceStatus.ready);
     });
 
     test('retry clears the failure and synthesizes again', () async {

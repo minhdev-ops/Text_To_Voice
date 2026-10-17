@@ -95,6 +95,8 @@ class Sentence {
     required this.index,
     required this.text,
     required this.blockId,
+    this.paragraph = 0,
+    this.displayText,
     this.pageNumber,
     this.status = SentenceStatus.idle,
     this.audioPath,
@@ -108,9 +110,31 @@ class Sentence {
 
   final String text;
   final String blockId;
+
+  /// The paragraph this sentence belongs to, 0-based and gapless.
+  ///
+  /// Audio is a flat sentence stream, but the reading surface is a *document*:
+  /// this is what lets it render continuous paragraphs — the sentences of one
+  /// paragraph flow together as prose — instead of one boxed row per sentence,
+  /// while tap-to-seek and the Spine stay per-sentence.
+  final int paragraph;
+
+  /// The sentence as the **user wrote it**, before normalization.
+  ///
+  /// [text] is what gets *spoken* — numbers expanded, `50%` read as “phần
+  /// trăm” — and reading those expansions on screen would look corrupted. The
+  /// reader shows this instead; `null` means the two could not be aligned
+  /// (paragraph structure changed between raw and normalized text) and [text]
+  /// is the honest fallback.
+  final String? displayText;
+
   final int? pageNumber;
 
   final SentenceStatus status;
+
+  /// The text shown on the reading surface: the user's own words when the raw
+  /// and normalized splits agreed, the spoken text otherwise.
+  String get display => displayText ?? text;
 
   final String? audioPath;
   final int? durationMs;
@@ -133,6 +157,8 @@ class Sentence {
   bool get hasAudio => audioPath != null;
 
   Sentence copyWith({
+    int? paragraph,
+    Object? displayText = _unset,
     SentenceStatus? status,
     Object? audioPath = _unset,
     Object? durationMs = _unset,
@@ -143,6 +169,10 @@ class Sentence {
         index: index,
         text: text,
         blockId: blockId,
+        paragraph: paragraph ?? this.paragraph,
+        displayText: identical(displayText, _unset)
+            ? this.displayText
+            : displayText as String?,
         pageNumber: pageNumber,
         status: status ?? this.status,
         audioPath:
@@ -166,6 +196,8 @@ class Sentence {
           other.index == index &&
           other.text == text &&
           other.blockId == blockId &&
+          other.paragraph == paragraph &&
+          other.displayText == displayText &&
           other.pageNumber == pageNumber &&
           other.status == status &&
           other.audioPath == audioPath &&
@@ -174,9 +206,10 @@ class Sentence {
           other.failureMessage == failureMessage);
 
   @override
-  int get hashCode => Object.hash(index, text, blockId, pageNumber, status,
-      audioPath, durationMs, synthesisMs, failureMessage);
+  int get hashCode => Object.hash(index, text, blockId, paragraph, displayText,
+      pageNumber, status, audioPath, durationMs, synthesisMs, failureMessage);
 
   @override
-  String toString() => 'Sentence($index, ${status.name})';
+  String toString() =>
+      'Sentence($index, p$paragraph, ${status.name})';
 }

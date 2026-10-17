@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:typed_data' show Uint8List;
 
-import 'package:flutter/foundation.dart' show immutable, listEquals;
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, immutable, listEquals, TargetPlatform;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../ai/ocr/desktop_ocr_engine.dart';
 import '../../ai/ocr/mlkit_ocr_engine.dart';
 import '../../core/camera/camera_plugin_source.dart';
 import '../../core/result/result.dart';
@@ -17,7 +19,9 @@ import '../../domain/models/document_image.dart' show ImageInput;
 import '../../domain/models/ocr.dart' show OcrLine, OcrResult;
 import '../../domain/models/structured_block.dart' show StructuredBlock;
 import '../../domain/ocr/ocr_structurer.dart';
-import '../library/kept_documents.dart';
+import '../library/kept_documents.dart'
+    show KeptDocument, keptDocumentSinkProvider, keptDocumentsProvider;
+import '../settings/memory_settings.dart';
 import 'camera_source.dart';
 
 /// The OCR engine the app recognizes with.
@@ -26,7 +30,11 @@ import 'camera_source.dart';
 /// tests with `FakeOcrEngine`. Its [OcrEngine.dataHandlingNote] is what the About
 /// screen says out loud, which is why the note lives on the port.
 final ocrEngineProvider = Provider<OcrEngine>((ref) {
-  final engine = MlKitOcrEngine();
+  final engine = switch (defaultTargetPlatform) {
+    TargetPlatform.android => MlKitOcrEngine(),
+    TargetPlatform.iOS => MlKitOcrEngine(),
+    _ => DesktopOcrEngine(),
+  };
   ref.onDispose(engine.close);
   return engine;
 });
@@ -406,7 +414,7 @@ class CaptureController extends Notifier<CaptureState> {
   Future<void> capture() async {
     if (state.status != CaptureStatus.ready) return;
 
-    state = state.copyWith(status: CaptureStatus.working, failureMessage: null);
+    _beginWork();
     final shot = await _camera.capture();
 
     switch (shot) {
@@ -438,24 +446,80 @@ class CaptureController extends Notifier<CaptureState> {
     state = state.copyWith(
       pages: pages,
       currentPage: pages.length - 1,
-      status: state.cameras.isEmpty ? CaptureStatus.idle : state.status,
+      status: _statusAfterWork(),
     );
     await _processPage(page.index);
+  }
+
+  /// Adds a page whose text came from an extracted document (PDF, EPUB, TXT,
+  /// Markdown) instead of a photograph.
+  ///
+  /// The image pipeline is deliberately skipped: `DocumentScanner` decodes
+  /// bytes as an image, and non-image bytes produce "Không đọc được ảnh này…"
+  /// on a file that imported perfectly — a red failure banner on a success.
+  Future<void> addExtractedPage({
+    required Uint8List bytes,
+    required String text,
+    OcrResult? ocr,
+    List<StructuredSection> sections = const <StructuredSection>[],
+  }) async {
+    final page = CapturedPage(
+      index: state.pages.length,
+      originalBytes: bytes,
+      ocr: ocr,
+      sections: sections,
+      text: text,
+      textPending: false,
+    );
+    final pages = <CapturedPage>[...state.pages, page];
+    state = state.copyWith(
+      pages: pages,
+      currentPage: pages.length - 1,
+      status: _statusAfterWork(),
+      stage: JobStage.done,
+      progress: 1,
+    );
   }
 
   /// Public entry point to (re)run analysis for a page by index.
   Future<void> processPage(int index) => _processPage(index);
 
-  Future<void> _processPage(int index) async {
-    final page = _pageAt(index);
-    if (page == null) return;
+  /// The status to land on when work finishes.
+  ///
+  /// With a camera that is `ready`. Without one, the *reason* the preview is
+  /// missing is preserved — collapsing to `idle` left a permanent
+  /// "Đang mở camera…" placeholder with a dead shutter after a file import
+  /// from the permission-denied screen, because only `ready` builds a preview
+  /// and only `ready` enables the shutter.
+  CaptureStatus _statusAfterWork() {
+    if (state.cameras.isNotEmpty) return CaptureStatus.ready;
+    final before = state.status == CaptureStatus.working
+        ? _statusBeforeWork
+        : state.status;
+    return before == CaptureStatus.permissionDenied
+        ? CaptureStatus.permissionDenied
+        : CaptureStatus.unsupported;
+  }
 
+  /// What the status was before the current piece of work set `working`, so
+  /// [_statusAfterWork] can restore it.
+  CaptureStatus _statusBeforeWork = CaptureStatus.idle;
+
+  void _beginWork() {
+    if (state.status != CaptureStatus.working) _statusBeforeWork = state.status;
     state = state.copyWith(
       status: CaptureStatus.working,
       progress: 0,
       stage: JobStage.analyzing,
       failureMessage: null,
     );
+  }
+
+  Future<void> _processPage(int index) async {
+    final page = _pageAt(index);
+    if (page == null) return;
+
+    _beginWork();
 
     final scanned = await _scanner.scan(ScanRequest(
       bytes: page.originalBytes,
@@ -468,7 +532,7 @@ class CaptureController extends Notifier<CaptureState> {
         failureMessage: scanned.failureOrNull?.message ??
             'Không xử lý được ảnh này.',
       ));
-      state = state.copyWith(status: CaptureStatus.ready);
+      state = state.copyWith(status: _statusAfterWork());
       return;
     }
 
@@ -519,7 +583,7 @@ class CaptureController extends Notifier<CaptureState> {
     }
 
     state = state.copyWith(
-      status: state.cameras.isEmpty ? CaptureStatus.idle : CaptureStatus.ready,
+      status: _statusAfterWork(),
       progress: 1,
       stage: JobStage.done,
     );
@@ -587,12 +651,24 @@ class CaptureController extends Notifier<CaptureState> {
     );
   }
 
+  /// The persistence run started by the most recent [keep], so the screen that
+  /// asked to keep can hold navigation until the document is really on disk.
+  ///
+  /// `keep` itself stays synchronous — the review screen and the tests call it
+  /// and use the id immediately — but the writes behind it are async, and a
+  /// caller that navigates away without awaiting them leaves a window where
+  /// killing the app loses the capture. Awaiting this closes that window.
+  Future<void> get persisting => _persisting ?? Future<void>.value();
+
+  Future<void>? _persisting;
+
   /// `Keep text`: creates the document and hands back its id so the screen can
   /// open the reader.
   ///
-  /// Phase 5 replaces the in-memory sink with the repository. Nothing else about
-  /// this method changes, which is the point of routing it through
-  /// [keptDocumentsProvider] rather than writing files here.
+  /// The document reaches two places: the session list (so the review flow can
+  /// still reach it in memory) and the repository — page images, blocks and
+  /// all — through [keptDocumentSinkProvider], which is what makes it survive
+  /// leaving the app and what puts its page images in the reader.
   String keep() {
     final pages = state.pages;
     final now = DateTime.now();
@@ -637,11 +713,47 @@ class CaptureController extends Notifier<CaptureState> {
       pageImages: pages.map((page) => page.originalBytes).toList(growable: false),
     );
 
-    final keptId = ref.read(keptDocumentsProvider.notifier).add(kept);
+    final keptNotifier = ref.read(keptDocumentsProvider.notifier);
+    final keptId = keptNotifier.add(kept);
+    // Started before anything else, so the sink always receives the full page
+    // images even in low-memory mode: "không giữ trong RAM" was never meant to
+    // cost the reader its pictures.
+    final sink = ref.read(keptDocumentSinkProvider);
+    _persisting = () async {
+      try {
+        await sink.save(kept);
+      } catch (_) {
+        // The document never reached the library, so its in-memory entry is a
+        // phantom — dropping it keeps a retry from stacking a second one.
+        keptNotifier.remove(keptId);
+        rethrow;
+      }
+    }();
     // A new document means new running headers, so the structurer's memory is
     // cleared rather than carried into the next capture.
     ref.read(ocrStructurerProvider).reset();
     state = state.copyWith(keptDocumentId: keptId);
+
+    // The tray still holds every page's original bytes — a 20-page scan is tens
+    // of megabytes of PNG sitting in `state` after the document is already safe
+    // in the library. Low-memory mode releases them **once the write has
+    // succeeded**: clearing synchronously (as this did) meant a failed save
+    // left the review screen with an empty tray, so the capture could never be
+    // retried and the error message promising exactly that was false.
+    if (ref.read(lowMemoryModeProvider)) {
+      unawaited(_persisting!.then(
+        (_) {
+          state = state.copyWith(
+            pages: const <CapturedPage>[],
+            currentPage: 0,
+          );
+        },
+        // On failure the tray is deliberately kept — it is what makes the
+        // retry the error message promises possible. The rejection itself is
+        // handled by the screen awaiting `persisting`.
+        onError: (Object _) {},
+      ));
+    }
     return keptId;
   }
 
@@ -656,6 +768,29 @@ class CaptureController extends Notifier<CaptureState> {
   }
 
   void clearFailure() => state = state.copyWith(failureMessage: null);
+
+  /// Dismisses the failure banner shown *on the current page*.
+  ///
+  /// The review screen's banner renders `page.failureMessage`, so clearing the
+  /// state-level [CaptureState.failureMessage] — what `clearFailure` does —
+  /// left the `Đóng` button doing nothing at all.
+  void clearPageFailure() {
+    final page = state.page;
+    if (page == null || page.failureMessage == null) return;
+    _replace(
+      page.index,
+      CapturedPage(
+        index: page.index,
+        originalBytes: page.originalBytes,
+        scan: page.scan,
+        ocr: page.ocr,
+        sections: page.sections,
+        text: page.text,
+        failureMessage: null,
+        textPending: page.textPending,
+      ),
+    );
+  }
 
   /// Empties the tray and returns the flow to a fresh capture session.
   void discardAll() {

@@ -261,6 +261,82 @@ class DatabaseDaos extends DatabaseAccessor<AppDatabase> with _$DatabaseDaosMixi
     return (delete(documentBlocks)..where((b) => b.documentId.equals(documentId))).go();
   }
 
+  /// Blocks whose text contains [pattern], with the page they sit on.
+  ///
+  /// This is the query SRS FR-17 §20 asks for and the library filter could not
+  /// be: a **location**. `document_blocks` carries the text, `document_pages`
+  /// carries the page number, and joining them here is what lets a result say
+  /// "Page 5" instead of making the user go and look.
+  ///
+  /// The join is `leftOuter` on pages on purpose. A block from a typed-text
+  /// document has no page, and that is a fact to report honestly (no page
+  /// number) rather than a row to hide.
+  Future<List<BlockSearchRow>> searchBlocks({
+    required String pattern,
+    required int limit,
+  }) {
+    final query = _blocksSearchQuery()
+      ..where(documentBlocks.content.like(pattern))
+      ..orderBy([OrderingTerm.asc(documentBlocks.documentId)])
+      ..limit(limit);
+    return query.map(_blockSearchRow).get();
+  }
+
+  /// Documents whose **name** contains [pattern], for the title half of a search.
+  Future<List<Document>> searchByName({
+    required String pattern,
+    required int limit,
+  }) {
+    final query = select(documents)
+      ..where((d) => d.name.like(pattern))
+      ..limit(limit);
+    return query.get();
+  }
+
+  /// A bounded window over **every** block, for the case-folding fallback.
+  ///
+  /// SQLite's `LIKE` only case-folds ASCII, so a Vietnamese heading stored as
+  /// `GIÁO TRÌNH` is invisible to `%giáo%` no matter how the query is typed.
+  /// When the indexed fast path finds nothing, [search] scans this window and
+  /// lets Dart — which case-folds the whole string — decide.
+  Future<List<BlockSearchRow>> scanBlocks({required int limit}) {
+    final query = _blocksSearchQuery()
+      ..orderBy([OrderingTerm.asc(documentBlocks.documentId)])
+      ..limit(limit);
+    return query.map(_blockSearchRow).get();
+  }
+
+  /// Every document name, for the same fallback as [scanBlocks]. Names are
+  /// one small row per document, so this is bounded by the library's size, not
+  /// by its text.
+  Future<List<Document>> scanDocumentNames({int limit = 5000}) {
+    final query = select(documents)..limit(limit);
+    return query.get();
+  }
+
+  /// The block → document → page join that every block search runs on, so the
+  /// indexed query and the fallback scan cannot drift apart.
+  JoinedSelectStatement<HasResultSet, dynamic> _blocksSearchQuery() {
+    return select(documentBlocks).join([
+      innerJoin(
+        documents,
+        documents.uuid.equalsExp(documentBlocks.documentId),
+      ),
+      leftOuterJoin(
+        documentPages,
+        documentPages.uuid.equalsExp(documentBlocks.pageId),
+      ),
+    ]);
+  }
+
+  BlockSearchRow _blockSearchRow(TypedResult row) => BlockSearchRow(
+        documentId: row.readTable(documentBlocks).documentId,
+        documentName: row.readTable(documents).name,
+        pageNumber: row.readTableOrNull(documentPages)?.pageNumber,
+        blockOrder: row.readTable(documentBlocks).order,
+        content: row.readTable(documentBlocks).content,
+      );
+
   // ============ Document Images ============
 
   Future<List<DocumentImage>> getImagesForDocument(String documentId) {
@@ -319,7 +395,13 @@ class DatabaseDaos extends DatabaseAccessor<AppDatabase> with _$DatabaseDaosMixi
   }
 
   Future<int> insertTtsAudio(TtsAudioCompanion audio) {
-    return into(ttsAudio).insert(audio);
+    // textHash is UNIQUE and two savers (foreground look-ahead queue and the
+    // background runner) legitimately race on the same key; the second one must
+    // overwrite instead of throwing SqliteException 2067 into the play loop.
+    return into(ttsAudio).insert(
+      audio,
+      onConflict: DoUpdate((_) => audio, target: [ttsAudio.textHash]),
+    );
   }
 
   Future<void> updateTtsAudioLastAccessed(String textHash, String? voiceId, double speed, String format) async {
@@ -493,3 +575,21 @@ class DatabaseDaos extends DatabaseAccessor<AppDatabase> with _$DatabaseDaosMixi
         .go();
   }
 }
+
+/// One matching block, joined to its document and (when it has one) its page.
+class BlockSearchRow {
+  const BlockSearchRow({
+    required this.documentId,
+    required this.documentName,
+    required this.blockOrder,
+    required this.content,
+    this.pageNumber,
+  });
+
+  final String documentId;
+  final String documentName;
+  final int? pageNumber;
+  final int blockOrder;
+  final String content;
+}
+

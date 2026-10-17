@@ -1,4 +1,8 @@
+import 'dart:async' show unawaited;
+
 import 'package:flutter/material.dart';
+
+import '../../core/logging/app_log.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -80,7 +84,7 @@ class _ScanReviewScreenState extends ConsumerState<ScanReviewScreen> {
           if (page.failureMessage != null)
             _FailureBanner(
               message: page.failureMessage!,
-              onDismiss: controller.clearFailure,
+              onDismiss: controller.clearPageFailure,
             ),
           if (state.lastScanNote != null)
             _ScanNote(note: state.lastScanNote!),
@@ -108,11 +112,12 @@ class _ScanReviewScreenState extends ConsumerState<ScanReviewScreen> {
             editing: _editing,
             canCopy: (page.text ?? '').trim().isNotEmpty,
             working: state.isWorking,
+            saving: _saving,
             onToggleImage: () =>
                 setState(() => _showOriginal = !_showOriginal),
             onToggleEditing: () => setState(() => _editing = !_editing),
             onCopy: () => _copy(page.text ?? ''),
-            onKeep: () => _keep(context, controller),
+            onKeep: () => unawaited(_keep(context, controller)),
           ),
         ],
       ),
@@ -128,18 +133,48 @@ class _ScanReviewScreenState extends ConsumerState<ScanReviewScreen> {
       ..showSnackBar(const SnackBar(content: Text('Đã sao chép văn bản.')));
   }
 
-  void _keep(BuildContext context, CaptureController controller) {
+  Future<void> _keep(BuildContext context, CaptureController controller) async {
     // Leaving edit mode first, so the text the user is looking at is the text
     // that gets stored even if the field has not committed yet.
-    setState(() => _editing = false);
+    setState(() {
+      _editing = false;
+      _saving = true;
+    });
     controller.keep();
+    try {
+      // Held until the document row, blocks and page images are on disk:
+      // closing the app in the gap would be exactly the loss the write exists
+      // to prevent.
+      await controller.persisting;
+    } catch (error) {
+      // The write failed, so the document is NOT in the library — and saying it
+      // was saved would be a lie the user only discovers later. Staying on this
+      // screen keeps the pages in the tray so `Giữ văn bản` can be pressed
+      // again, which is the only recoverable place to be.
+      AppLog.error('capture.persist.failed', error: error);
+      if (!context.mounted) return;
+      setState(() => _saving = false);
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(SnackBar(
+          content: Text('Không lưu được tài liệu: $error'),
+          duration: const Duration(seconds: 6),
+        ));
+      return;
+    }
+    if (!context.mounted) return;
     context.go(RoutePaths.library);
+    if (!context.mounted) return;
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
       ..showSnackBar(const SnackBar(
         content: Text('Đã lưu tài liệu. Mở Thư viện để đọc thành tiếng.'),
       ));
   }
+
+  /// `true` while `keep` is still writing, so the button cannot be pressed
+  /// twice and the user can see the save is happening.
+  bool _saving = false;
 }
 
 /// `N dòng cần kiểm tra` — the honest count the UX spec asks for, with the
@@ -258,6 +293,7 @@ class _ActionBar extends StatelessWidget {
     required this.editing,
     required this.canCopy,
     required this.working,
+    required this.saving,
     required this.onToggleImage,
     required this.onToggleEditing,
     required this.onCopy,
@@ -268,6 +304,7 @@ class _ActionBar extends StatelessWidget {
   final bool editing;
   final bool canCopy;
   final bool working;
+  final bool saving;
   final VoidCallback onToggleImage;
   final VoidCallback onToggleEditing;
   final VoidCallback onCopy;
@@ -310,8 +347,8 @@ class _ActionBar extends StatelessWidget {
             ),
             const Spacer(),
             FilledButton(
-              onPressed: working ? null : onKeep,
-              child: const Text('Giữ văn bản'),
+              onPressed: working || saving ? null : onKeep,
+              child: Text(saving ? 'Đang lưu…' : 'Giữ văn bản'),
             ),
           ],
         ),

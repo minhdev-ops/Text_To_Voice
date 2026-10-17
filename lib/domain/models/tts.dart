@@ -114,6 +114,33 @@ class TtsOptions {
   String cacheKey(String normalizedText) =>
       '$voiceId|${speed.toStringAsFixed(2)}|${format.name}|$normalizedText';
 
+  /// Serializes to the `settings` table, where a document's own reading
+  /// preferences live (`tts_options:<documentId>`).
+  ///
+  /// A flat JSON of exactly the three fields the voice sheet edits, rather than
+  /// a schema-per-field: one key, one read, one write, and a corrupt or missing
+  /// entry degrades to the app defaults instead of failing to open a document.
+  Map<String, Object?> toJson() => <String, Object?>{
+        if (voiceId != null) 'voiceId': voiceId,
+        'speed': speed,
+        'volume': volume,
+      };
+
+  /// Restores options saved by [toJson], or `null` when nothing usable is
+  /// stored. Unknown keys are ignored, so adding a field later cannot break a
+  /// stored value.
+  static TtsOptions? tryFromJson(Object? json) {
+    if (json is! Map) return null;
+    final voiceId = json['voiceId'];
+    final speed = json['speed'];
+    final volume = json['volume'];
+    return TtsOptions(
+      voiceId: voiceId is String && voiceId.isNotEmpty ? voiceId : null,
+      speed: speed is num ? speed.toDouble() : 1.0,
+      volume: volume is num ? volume.toDouble() : 1.0,
+    );
+  }
+
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||

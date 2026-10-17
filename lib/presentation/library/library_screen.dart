@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../core/router/app_router.dart' show RoutePaths;
+import '../../core/router/app_router.dart' show RoutePaths, readAloudLocation;
 import '../../core/share/share_intent.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/semantic_colors.dart';
@@ -19,6 +19,7 @@ import '../common/brief_error_label.dart';
 import '../common/empty_state.dart';
 import 'library_providers.dart';
 import 'resume_strip.dart';
+import 'search_results_list.dart';
 
 /// First of the four destinations (FR-01, FR-18).
 ///
@@ -67,23 +68,41 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
     final countAsync = ref.watch(libraryDocumentCountProvider);
     final categoriesAsync = ref.watch(libraryCategoriesProvider);
     final searchQuery = ref.watch(librarySearchQueryProvider);
+    // The *committed* term, not the field's contents: a search that has not
+    // settled yet must not swap the list out from under the reader mid-word.
+    final searchTerm = ref.watch(librarySearchTermProvider);
+    final searchAsync = ref.watch(librarySearchResultsProvider);
     // Filter/sort state is watched inside libraryDocumentsProvider and
     // libraryDocumentCountProvider — watching again here would only duplicate
     // the rebuilds without reading the values.
+
+    final searching = searchTerm.trim().isNotEmpty;
 
     return Scaffold(
       appBar: _buildAppBar(context, ref, searchQuery),
       body: Column(
         children: [
           const ResumeStrip(),
-          if (_showSearch) _buildSearchBar(context, ref),
           if (_showFilters) _buildFilterBar(context, ref, categoriesAsync),
           Expanded(
-            child: documentsAsync.when(
-              data: (documents) => _buildDocumentList(context, ref, documents, countAsync),
-              loading: () => const Center(child: CircularProgressIndicator()),
-              error: (e, _) => _buildError(context, e),
-            ),
+            // Search replaces the list rather than filtering it: SRS FR-17 §20
+            // is a different question ("where?") from the filter's ("which
+            // documents?"), and showing both would be one search answered twice.
+            child: searching
+                ? searchAsync.when(
+                    data: (results) =>
+                        SearchResultsList(results: results, term: searchTerm),
+                    loading: () =>
+                        const Center(child: CircularProgressIndicator()),
+                    error: (e, _) => _buildError(context, e),
+                  )
+                : documentsAsync.when(
+                    data: (documents) =>
+                        _buildDocumentList(context, ref, documents, countAsync),
+                    loading: () =>
+                        const Center(child: CircularProgressIndicator()),
+                    error: (e, _) => _buildError(context, e),
+                  ),
           ),
         ],
       ),
@@ -123,8 +142,14 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                 hintText: 'Tìm kiếm tài liệu...',
                 border: InputBorder.none,
               ),
-              onChanged: (value) => ref.read(librarySearchQueryProvider.notifier).state = value,
-              onSubmitted: (_) => _toggleSearch(),
+              onChanged: (value) {
+                ref.read(librarySearchQueryProvider.notifier).state = value;
+                // Debounced: one query per burst of typing, not one per letter.
+                ref.read(librarySearchTermProvider.notifier).update(value);
+              },
+              onSubmitted: (value) {
+                ref.read(librarySearchTermProvider.notifier).commit(value);
+              },
             )
           : Text(
               searchQuery.isNotEmpty
@@ -206,49 +231,29 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
           IconButton(
             icon: const Icon(Icons.clear),
             tooltip: 'Xóa tìm kiếm',
-            onPressed: () {
-              _searchController.clear();
-              ref.read(librarySearchQueryProvider.notifier).state = '';
-            },
+            onPressed: () => _clearSearch(ref),
           ),
         ],
       ],
     );
   }
 
+  /// Empties the field, the raw query and the committed term together.
+  ///
+  /// One method because clearing only some of them used to leave the results
+  /// view up with an empty search box — a state with no way back except
+  /// retyping.
+  void _clearSearch(WidgetRef ref) {
+    _searchController.clear();
+    ref.read(librarySearchQueryProvider.notifier).state = '';
+    ref.read(librarySearchTermProvider.notifier).commit('');
+  }
+
   void _toggleSearch() {
     setState(() {
       _showSearch = !_showSearch;
-      if (!_showSearch) {
-        _searchController.clear();
-        ref.read(librarySearchQueryProvider.notifier).state = '';
-      }
+      if (!_showSearch) _clearSearch(ref);
     });
-  }
-
-  Widget _buildSearchBar(BuildContext context, WidgetRef ref) {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(Spacing.gutter, 0, Spacing.gutter, Spacing.s12),
-      child: TextField(
-        controller: _searchController,
-        autofocus: true,
-        decoration: InputDecoration(
-          hintText: 'Tìm kiếm tài liệu...',
-          prefixIcon: const Icon(Icons.search),
-          suffixIcon: _searchController.text.isNotEmpty
-              ? IconButton(
-                  icon: const Icon(Icons.clear),
-                  onPressed: () {
-                    _searchController.clear();
-                    ref.read(librarySearchQueryProvider.notifier).state = '';
-                  },
-                )
-              : null,
-          border: const OutlineInputBorder(),
-        ),
-        onChanged: (value) => ref.read(librarySearchQueryProvider.notifier).state = value,
-      ),
-    );
   }
 
   Widget _buildFilterBar(BuildContext context, WidgetRef ref, AsyncValue<List<String>> categoriesAsync) {
@@ -392,7 +397,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
 
   void _onDocumentTap(BuildContext context, WidgetRef ref, Document document) {
     ref.read(documentRepositoryProvider).markOpened(document.id);
-    context.go('${RoutePaths.readAloud}?documentId=${document.id}');
+    context.go(readAloudLocation(documentId: document.id));
   }
 
   void _showDocumentMenu(BuildContext context, WidgetRef ref, Document document) {
@@ -501,7 +506,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
               : SnackBar(content: Text('Đã nhập "${result.name}" thành công!')),
         );
 
-      context.go('${RoutePaths.readAloud}?documentId=${result.documentId}');
+      context.go(readAloudLocation(documentId: result.documentId));
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)

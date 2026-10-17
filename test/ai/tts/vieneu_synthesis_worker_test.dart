@@ -131,7 +131,7 @@ void main() {
       'vieneu_acoustic_cached.onnx',
       'moss_audio_tokenizer_decode_full.onnx',
     });
-    expect(worker!.isolateName, isNotEmpty);
+    expect(worker.isolateName, isNotEmpty);
     expect(worker.isolateName, isNot(Isolate.current.debugName ?? ''));
     expect(worker.loadTime, greaterThan(Duration.zero));
 

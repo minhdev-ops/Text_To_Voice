@@ -5,10 +5,10 @@ import 'package:path_provider/path_provider.dart';
 /// App-private storage layout (SRS §38 / NFR-02).
 ///
 /// All content lives under the app's private documents directory:
-/// - documents/<doc-id>/          — original imported files
-/// - documents/<doc-id>/pages/    — rendered page images
-/// - documents/<doc-id>/images/   — extracted/OCR images
-/// - audio/<doc-id>/              — synthesized sentence audio (WAV)
+/// - documents/`<doc-id>`/          — original imported files
+/// - documents/`<doc-id>`/pages/    — rendered page images
+/// - documents/`<doc-id>`/images/   — extracted/OCR images
+/// - audio/`<doc-id>`/              — synthesized sentence audio (WAV)
 /// - models/                      — downloaded ONNX checkpoints
 /// - exports/                     — user-initiated exports (txt/md/json/wav/zip)
 /// - temp/                        — transient files during processing
@@ -66,22 +66,22 @@ class AppStorage {
   /// Base app-private directory.
   Directory get base => _baseDir!;
 
-  /// Document storage: documents/<doc-id>/
+  /// Document storage: documents/`<doc-id>`/
   Directory documentDir(String documentId) {
     return Directory('${_documentsDir!.path}${Platform.pathSeparator}$documentId');
   }
 
-  /// Page images: documents/<doc-id>/pages/
+  /// Page images: documents/`<doc-id>`/pages/
   Directory documentPagesDir(String documentId) {
     return Directory('${documentDir(documentId).path}${Platform.pathSeparator}pages');
   }
 
-  /// Extracted/OCR images: documents/<doc-id>/images/
+  /// Extracted/OCR images: documents/`<doc-id>`/images/
   Directory documentImagesDir(String documentId) {
     return Directory('${documentDir(documentId).path}${Platform.pathSeparator}images');
   }
 
-  /// Audio cache: audio/<doc-id>/
+  /// Audio cache: audio/`<doc-id>`/
   Directory audioDir(String documentId) {
     return Directory('${_audioDir!.path}${Platform.pathSeparator}$documentId');
   }
@@ -96,7 +96,7 @@ class AppStorage {
   /// Models directory: models/
   Directory get modelsDir => _modelsDir!;
 
-  /// Specific model directory: models/<model-id>/
+  /// Specific model directory: models/`<model-id>`/
   Directory modelDir(String modelId) {
     return Directory('${_modelsDir!.path}${Platform.pathSeparator}$modelId');
   }

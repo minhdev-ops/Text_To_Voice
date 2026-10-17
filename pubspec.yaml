@@ -54,7 +54,10 @@ dependencies:
   # sea-g2p is called through its C ABI (dart:ffi); this provides the
   # string/alloc helpers so no manual pointer arithmetic leaks into the app.
   ffi: ^2.1.0
+  share_plus: ^13.3.0
 
+  archive: any
+  riverpod: any
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -81,6 +84,8 @@ dev_dependencies:
 # following page: https://dart.dev/tools/pub/pubspec
 
 # The following section is specific to Flutter packages.
+  path: any
+  cross_file: any
 flutter:
 
   # The following line ensures that the Material Icons font is

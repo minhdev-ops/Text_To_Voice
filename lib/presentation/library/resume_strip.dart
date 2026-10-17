@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../core/router/app_router.dart' show RoutePaths;
+import '../../core/router/app_router.dart' show readAloudLocation;
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/semantic_colors.dart';
 import '../../core/theme/tokens.dart';
@@ -27,7 +27,7 @@ class ResumeStrip extends ConsumerWidget {
         return _ResumeStripCard(position: position);
       },
       loading: () => const SizedBox.shrink(),
-      error: (_, __) => const SizedBox.shrink(),
+      error: (_, _) => const SizedBox.shrink(),
     );
   }
 }
@@ -96,7 +96,18 @@ class _ResumeStripCard extends ConsumerWidget {
                       onPressed: () {
                         repo.deleteReadingPosition(doc.id);
                         repo.markOpened(doc.id);
-                        context.go('${RoutePaths.readAloud}?documentId=${doc.id}');
+                        // The strip is built from a snapshot of the saved
+                        // position: without this it keeps offering a place the
+                        // user has just chosen to abandon.
+                        ref.invalidate(latestReadingPositionProvider);
+                        // `fromStart` as well as the deleted position: the reader
+                        // is kept alive in its own tab, and its text is still on
+                        // screen, so a plain navigation was ignored and the
+                        // reading carried on from the sentence it had reached.
+                        context.go(readAloudLocation(
+                          documentId: doc.id,
+                          fromStart: true,
+                        ));
                       },
                       child: const Text('Đọc từ đầu'),
                     ),
@@ -106,7 +117,10 @@ class _ResumeStripCard extends ConsumerWidget {
                     child: FilledButton(
                       onPressed: () {
                         repo.markOpened(doc.id);
-                        context.go('${RoutePaths.readAloud}?documentId=${doc.id}&resume=true');
+                        context.go(readAloudLocation(
+                          documentId: doc.id,
+                          resume: true,
+                        ));
                       },
                       child: const Text('Tiếp tục'),
                     ),
@@ -125,8 +139,13 @@ class _ResumeStripCard extends ConsumerWidget {
     if (position.pageNumber != null) {
       parts.add('Trang ${position.pageNumber}');
     }
-    if (position.blockId != null) {
-      parts.add('Đoạn ${position.blockId!.substring(0, 8)}');
+    final blockId = position.blockId;
+    if (blockId != null && blockId.isNotEmpty) {
+      // Shortened for the strip, but only as far as the id actually goes: a
+      // hard `substring(0, 8)` throws on a short id, and a crash while painting
+      // the resume strip is the worst possible place for one.
+      final short = blockId.length > 8 ? blockId.substring(0, 8) : blockId;
+      parts.add('Đoạn $short');
     }
     parts.add('Câu ${position.sentenceIndex + 1}');
     if (position.positionMs > 0) {

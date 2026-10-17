@@ -19,9 +19,11 @@ import '../../domain/engines/audio_output.dart';
 /// [watchdogAfter] only reports a stage that is taking too long — it never
 /// aborts it, so the instrumentation cannot change the behavior it measures.
 ///
-/// Background playback with a media notification (FR-11) needs `audio_service`
-/// around this; that is Phase 6 work (ROADMAP "background playback hardening"),
-/// and [AudioOutput] does not have to change for it.
+/// FR-11's media notification is **not** here, and that is deliberate. FR-11
+/// (SRS §14) is the in-app transport — position, sentence count, speed — and
+/// Phase 1 ships all of it. A lock-screen notification with audio focus and
+/// Bluetooth routing is ROADMAP Phase 6 todo 10, and `audio_service` is still
+/// on ROADMAP's unvalidated list, so nothing here depends on it yet.
 class JustAudioOutput implements AudioOutput {
   JustAudioOutput({
     ja.AudioPlayer? player,

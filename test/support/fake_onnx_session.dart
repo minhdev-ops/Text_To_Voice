@@ -28,6 +28,7 @@ class FakeOnnxSession implements OnnxSession {
   });
 
   final List<OnnxInputInfo> inputs_;
+  @override
   final List<String> outputs;
   final bool throwOnRun;
 

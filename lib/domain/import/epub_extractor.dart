@@ -1,5 +1,4 @@
 import 'dart:convert' show utf8;
-import 'dart:typed_data' show Uint8List;
 
 import 'package:archive/archive.dart';
 import 'package:xml/xml.dart';
@@ -7,7 +6,6 @@ import 'package:xml/xml.dart';
 import '../../core/result/result.dart';
 import '../engines/document_extractor.dart';
 import '../engines/progress.dart' show JobStage, ProgressCallback;
-import '../models/document_block.dart' show BlockType;
 import '../models/extraction.dart' show ExtractionResult, ExtractedPage;
 import '../models/imported_file.dart' show ImportedFile;
 import '../models/structured_block.dart' show StructuredBlock;
@@ -160,13 +158,8 @@ class EpubExtractor implements DocumentExtractor {
     return null;
   }
 
-  String _readString(ArchiveFile file) {
-    final content = file.content;
-    if (content is Uint8List) {
-      return utf8.decode(content, allowMalformed: true);
-    }
-    return utf8.decode(file.readBytes() ?? const <int>[], allowMalformed: true);
-  }
+  String _readString(ArchiveFile file) =>
+      utf8.decode(file.content, allowMalformed: true);
 
   String? _rootfilePath(String containerXml) {
     try {

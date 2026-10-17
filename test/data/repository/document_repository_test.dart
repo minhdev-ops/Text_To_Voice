@@ -10,7 +10,6 @@ import 'package:text_to_voice/domain/models/document.dart';
 import 'package:text_to_voice/domain/models/document_block.dart';
 import 'package:text_to_voice/domain/models/document_image.dart';
 import 'package:text_to_voice/domain/models/reading.dart';
-import 'package:text_to_voice/domain/models/tts.dart';
 
 void main() {
   group('DocumentRepository', () {

@@ -1,4 +1,5 @@
 /// Data layer exports.
+library;
 export 'data/database/app_database.dart';
 export 'data/database/database_daos.dart';
 export 'data/repository/document_repository.dart';

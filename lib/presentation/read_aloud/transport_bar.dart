@@ -94,20 +94,44 @@ class TransportBar extends StatelessWidget {
                   ),
                   const SizedBox(width: Spacing.s8),
                   if (sentenceLabel != null)
-                    Text(sentenceLabel!, style: theme.utility),
+                    Flexible(
+                      child: Text(
+                        sentenceLabel!,
+                        style: theme.utility,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
                   const Spacer(),
                   _SpeedChip(label: speedLabel, onTap: onSpeedTap),
                   if (voiceLabel != null) ...<Widget>[
                     const SizedBox(width: Spacing.s8),
                     // Voice is not a pill: only the speed chip earns `full`.
-                    TextButton(
-                      onPressed: onVoiceTap,
-                      child: Text(voiceLabel!, style: theme.utility),
+                    // Flexible so a long voice name ellipsizes instead of
+                    // pushing the times off the right edge of the bar.
+                    Flexible(
+                      child: TextButton(
+                        onPressed: onVoiceTap,
+                        child: Text(
+                          voiceLabel!,
+                          style: theme.utility,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
                     ),
                   ],
                   if (timeLabel != null) ...<Widget>[
                     const SizedBox(width: Spacing.s8),
-                    Text(timeLabel!, style: theme.utility),
+                    Flexible(
+                      child: Text(
+                        timeLabel!,
+                        style: theme.utility,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.end,
+                      ),
+                    ),
                   ],
                 ],
               ),

@@ -8,8 +8,7 @@ import 'dart:async';
 /// testable, and it is testable only when playback is not a plugin call.
 ///
 /// Phase 1 verified `just_audio 0.10.6` (ryanheise.com, Android) for the
-/// plugin-backed implementation, which also brings `audio_service` for the
-/// media notification (FR-11 background playback).
+/// plugin-backed implementation.
 abstract interface class AudioOutput {
   /// Starts [path] from the beginning, replacing whatever was playing.
   Future<void> play(String path, {double volume = 1.0});

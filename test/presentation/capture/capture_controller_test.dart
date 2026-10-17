@@ -11,10 +11,26 @@ import 'package:text_to_voice/domain/models/ocr.dart' show OcrLine;
 import 'package:text_to_voice/presentation/capture/camera_source.dart';
 import 'package:text_to_voice/presentation/capture/capture_providers.dart';
 import 'package:text_to_voice/presentation/library/kept_documents.dart';
+import 'package:text_to_voice/presentation/settings/memory_settings.dart';
 
 import '../../support/fake_camera_source.dart';
 import '../../support/fake_ocr_engine.dart';
 import '../../support/image_fixtures.dart';
+
+/// A low-memory mode that is always on, so a test needs no database.
+class _AlwaysLowMemory extends LowMemoryMode {
+  @override
+  bool build() => true;
+}
+
+/// A sink that records what it was given, so the capture tests never touch the
+/// database or the file system.
+class _RecordingSink implements KeptDocumentSink {
+  final saved = <KeptDocument>[];
+
+  @override
+  Future<void> save(KeptDocument document) async => saved.add(document);
+}
 
 /// A page image the rest of the pipeline can actually process.
 List<int> _frame() => pngBytes(syntheticCapture(
@@ -33,6 +49,7 @@ void main() {
         overrides: [
           cameraSourceProvider.overrideWithValue(camera),
           ocrEngineProvider.overrideWithValue(ocr),
+          keptDocumentSinkProvider.overrideWithValue(_RecordingSink()),
         ],
       );
 
@@ -338,6 +355,45 @@ void main() {
         sections.where((section) => section.block.type == BlockType.paragraph),
         isNotEmpty,
       );
+    });
+
+    test('low-memory mode releases the page bytes the tray still holds',
+        () async {
+      container = ProviderContainer(
+        overrides: [
+          cameraSourceProvider.overrideWithValue(camera),
+          ocrEngineProvider.overrideWithValue(ocr),
+          lowMemoryModeProvider.overrideWith(() => _AlwaysLowMemory()),
+          keptDocumentSinkProvider.overrideWithValue(_RecordingSink()),
+        ],
+      );
+      CaptureController controller() =>
+          container.read(captureControllerProvider.notifier);
+
+      await controller().addPageFromBytes(Uint8List.fromList(_frame()));
+      expect(controller().state.pages, isNotEmpty);
+
+      final id = controller().keep();
+
+      // Until the write resolves the tray still holds the only copy of the
+      // bytes: dropping them first meant a failed save left an empty tray and
+      // an error message promising a retry that was no longer possible.
+      expect(controller().state.pages, isNotEmpty);
+      expect(controller().state.keptDocumentId, id);
+
+      // Once the document is safe, the tens of megabytes of original PNG in
+      // the tray are pure waste — low-memory mode releases them.
+      await controller().persisting;
+      expect(controller().state.pages, isEmpty);
+    });
+
+    test('outside low-memory mode the tray is left intact', () async {
+      await controller().addPageFromBytes(Uint8List.fromList(_frame()));
+      controller().keep();
+
+      // Unchanged behaviour: keeping a document does not silently discard the
+      // pages the user may still want to re-scan.
+      expect(state().pages, isNotEmpty);
     });
   });
 
