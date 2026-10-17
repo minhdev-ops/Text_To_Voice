@@ -11,7 +11,7 @@ PrivilegesRequired=admin
 Name: "desktopicon"; Description: "Tạo biểu tượng trên desktop"; GroupDescription: "Bổ sung:"; Flags: unchecked
 
 [Files]
-Source: "build\windows\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\Text To Voice"; Filename: "{app}\text_to_voice.exe"
