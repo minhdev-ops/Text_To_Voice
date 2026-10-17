@@ -23,13 +23,3 @@ jobs:
         with:
           name: windows-app
           path: build/windows/runner/Release/
-
-      - uses: jherr/inno-setup-action@v3
-        with:
-          version: 6.2.2
-          script: windows/installer.iss
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-installer
-          path: build/windows/installer/QuietRead-Setup.exe
