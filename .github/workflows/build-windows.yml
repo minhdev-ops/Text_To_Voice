@@ -19,7 +19,22 @@ jobs:
 
       - run: flutter build windows --release
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes
+
+      - name: Build Windows installer (.exe)
+        shell: pwsh
+        run: |
+          Set-Location windows
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+
       - uses: actions/upload-artifact@v4
         with:
           name: windows-app
           path: build/windows/x64/runner/Release/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: build/windows/installer/QuietRead-Setup.exe
